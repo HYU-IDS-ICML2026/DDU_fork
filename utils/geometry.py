@@ -3,7 +3,7 @@ import numpy as np
 
 def get_geometry_stats(model, loader, device, num_classes):
     """
-    마지막 피쳐층의 기하학적 구조(Intra-class, Inter-class, Anisotropy, Effective Rank 등)를 분석합니다.
+    마지막 피쳐층의 기하학적 구조(Intra-class, Inter-class, Anisotropy, Effective Rank, NC1~4)를 분석합니다.
     """
     model.eval()
     
@@ -11,9 +11,8 @@ def get_geometry_stats(model, loader, device, num_classes):
     features_list = []
     labels_list = []
     
-    # 모델의 Linear layer 가중치 가져오기 (NC3 측정용 - ResNet/WideResNet/VGG 대응)
+    # 모델의 Linear layer 가중치 가져오기 (NC3 측정용)
     if hasattr(model, 'module'):
-        # DataParallel 사용 시
         if hasattr(model.module, 'fc'): classifier_weights = model.module.fc.weight.data
         elif hasattr(model.module, 'linear'): classifier_weights = model.module.linear.weight.data
         else: classifier_weights = None
@@ -52,7 +51,7 @@ def get_geometry_stats(model, loader, device, num_classes):
         mu_c = feats_c.mean(dim=0)
         class_means.append(mu_c)
         
-        # 공분산 및 Trace 계산
+        # 공분산 및 Trace 계산 (Within-Class Covariance)
         centered = feats_c - mu_c
         cov_c = torch.matmul(centered.T, centered) / (feats_c.shape[0] - 1)
         
@@ -67,7 +66,7 @@ def get_geometry_stats(model, loader, device, num_classes):
 
     class_means = torch.stack(class_means) # (K, D)
     
-    # [지표 1] Within-class variance (Mean Trace)
+    # [지표 1 & NC1 분자] Within-class variance (Mean Trace of Sigma_W)
     mean_within_class_var = (within_class_scatter / num_classes).item()
     
     # [지표 2] Inter-class mean distance
@@ -93,26 +92,45 @@ def get_geometry_stats(model, loader, device, num_classes):
     else:
         effective_rank = 0.0
 
-    # [추가 지표] NC2 (Cosine Sim of Class Means)
+    # [추가 지표: NC1] Variability Collapse (Trace(Sigma_W) / Trace(Sigma_B))
+    # Between-Class Covariance (Sigma_B) 계산
+    global_mean_of_means = class_means.mean(dim=0)
+    centered_means = class_means - global_mean_of_means
+    cov_between = torch.matmul(centered_means.T, centered_means) / (num_classes - 1)
+    between_class_scatter = torch.trace(cov_between)
+    
+    if between_class_scatter > 1e-8:
+        nc1_collapse = mean_within_class_var / between_class_scatter.item()
+    else:
+        nc1_collapse = 0.0
+
+    # [추가 지표: NC2] Cosine Sim of Class Means
     means_norm = class_means / class_means.norm(dim=1, keepdim=True)
     cosine_sim_matrix = torch.mm(means_norm, means_norm.T)
     mask = ~torch.eye(num_classes, dtype=torch.bool, device=device)
     mean_cosine_sim = cosine_sim_matrix[mask].mean().item()
 
-    # [추가 지표] NC3 (Feature-Weight Alignment)
+    # [추가 지표: NC3] Feature-Weight Alignment
     mean_feature_weight_alignment = 0.0
     if classifier_weights is not None:
         W = classifier_weights.to(device)
         W_norm = W / W.norm(dim=1, keepdim=True)
-        # 같은 클래스끼리의 코사인 유사도 평균
         alignment_scores = torch.diag(torch.mm(means_norm, W_norm.T))
         mean_feature_weight_alignment = alignment_scores.mean().item()
+
+    # [추가 지표: NC4] Simplification to NCC (Nearest Class Center Accuracy)
+    # 각 샘플에 대해 가장 가까운 클래스 평균을 예측으로 사용
+    dists = torch.cdist(features, class_means, p=2) # (N, K)
+    ncc_preds = torch.argmin(dists, dim=1) # (N,)
+    nc4_accuracy = (ncc_preds == labels).float().mean().item()
 
     return {
         "Within-class Variance": mean_within_class_var,
         "Inter-class Distance": mean_inter_class_dist,
         "Anisotropy": mean_anisotropy,
         "Effective Rank": effective_rank,
+        "NC1 (Variability)": nc1_collapse,   # Trace(Sw)/Trace(Sb)
         "NC2 (Mean Sim)": mean_cosine_sim,
-        "NC3 (Alignment)": mean_feature_weight_alignment
+        "NC3 (Alignment)": mean_feature_weight_alignment,
+        "NC4 (NCC Acc)": nc4_accuracy         # NCC Classifier Accuracy
     }

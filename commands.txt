@@ -1,15 +1,15 @@
 검증코드
 nohup python evaluate_v2.py \
-    --checkpoint_path sam_wide_resnet_sn_3.0_mod_0_350.model \
+    --checkpoint_path models/_sgd_0wide_resnet_sn_3.0_mod_0_350.model \
     --dataset cifar10 \
-    --ood_dataset cifar100 \
+    --ood_dataset mnist \
     --model wide_resnet \
     --sn \
     --mod \
     --coeff 3.0 \
     --seed 0 \
     --batch_size 128 \
-    --gpu > evaluation_log/sam_wide_resnet_sn_3.0_mod_0_350.txt 2>&1 &
+    --gpu > evaluation_log/sgd_sn_3.0_mod_0_350.txt 2>&1 &
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
