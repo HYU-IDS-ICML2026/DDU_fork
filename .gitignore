@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Datasets / downloaded files
+data/
+
+# Checkpoints / model files
+*.model
+*.pth
+*.pt
+*.ckpt
+
+# Logs / outputs
+results/
+stats_logging/
+
+# Large archives / matlab files
+*.tar.gz
+*.mat

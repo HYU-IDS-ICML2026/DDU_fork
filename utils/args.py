@@ -127,6 +127,26 @@ def training_args():
         help="Second milestone to change lr",
     )
 
+    # [추가 인자] 단일 GPU 선택 + 옵티마이저(SGD/SAM) + rho + 체크포인트 이름
+    parser.add_argument("--gpu-id", type=int, default=0,
+                        help="사용할 GPU index. (보통 CUDA_VISIBLE_DEVICES를 함께 쓰면 스크립트 내부에서는 0을 사용)")
+
+    parser.add_argument("--optimizer-type", type=str, default=None, choices=["sgd", "sam"],
+                        help="옵티마이저 선택. (기존 args.optimiser와 병행: 지정 시 이 값이 우선)")
+
+    parser.add_argument("--sam-rho", type=float, default=0.05,
+                        help="SAM neighborhood 크기 rho (optimizer-type=sam 일 때 사용)")
+
+    parser.add_argument("--sam-adaptive", action="store_true",
+                        help="Adaptive SAM(ASAM) 사용 여부 (기본 False)")
+
+    parser.add_argument("--use-data-parallel", action="store_true",
+                        help="(선택) DataParallel 사용. 기본은 단일 GPU. 팀 실험에서는 기본 False 권장.")
+
+    parser.add_argument("--output-name", type=str, default=None,
+                        help="최종(또는 last) 체크포인트 파일명. 미지정 시 자동 생성.")
+
+
     return parser
 
 
