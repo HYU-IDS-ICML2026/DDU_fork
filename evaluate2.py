@@ -22,6 +22,9 @@ import math
 import torch
 import argparse
 import numpy as np
+#추가
+from datetime import datetime
+import re
 # =========================
 # [추가] FAISS (GPU kNN 가속)
 # - 목적: kNN OOD score 계산을 torch.mm (O(N*D) per batch) 대신 FAISS로 가속
@@ -308,6 +311,70 @@ def load_state_dict_flexible(net, ckpt_path: str, device: torch.device):
     return net
 
 
+# =========================
+# [추가] 학습 러닝 폴더명 파싱 (train_results 하위 폴더 규칙)
+# =========================
+def parse_training_run_from_path(path: str):
+    """
+    [변경] folder.split("_") 방식은 rho0_2, sn3_0처럼 "소수점 표현"에 underscore('_')를 쓰는 경우
+           토큰이 쪼개져서 파싱이 깨질 수 있습니다.
+
+    그래서 train.py가 만드는 "run 폴더명" 전체를 정규식(regex)으로 한 번에 파싱합니다.
+
+    Expected folder name pattern (train.py 기준):
+      model_dataset_(sam|sgd)[_rhoX]_(nosn|snY)_seedZ_MMDD_HHMMSS
+
+    예시:
+      resnet50_cifar100_sam_rho0_2_sn3_0_seed1_1230_192623
+      resnet50_cifar100_sgd_sn3_0_seed1_1230_192541
+    """
+    abs_path = os.path.abspath(path)
+    run_dir = abs_path if os.path.isdir(abs_path) else os.path.dirname(abs_path)
+    folder = os.path.basename(run_dir)
+
+    pattern = re.compile(
+        r"^(?P<model>[^_]+)_(?P<dataset>[^_]+)_(?P<opt>sam|sgd)"
+        r"(?:_rho(?P<rho>[0-9]+(?:_[0-9]+)*))?"
+        r"_(?P<snseg>nosn|sn(?P<coeff>[0-9]+(?:_[0-9]+)*))"
+        r"_seed(?P<seed>[0-9]+)_(?P<ts>[0-9]{4}_[0-9]{6})$"
+    )
+
+    m = pattern.match(folder)
+    if m is None:
+        raise ValueError(
+            f"Folder name '{folder}' does not match the expected pattern. "
+            "Pass a checkpoint under train_results/<run_folder>/... ."
+        )
+
+    model_name = m.group("model")
+    dataset_name = m.group("dataset")
+    optimizer = m.group("opt")
+
+    rho_str = m.group("rho")
+    sam_rho = float(rho_str.replace("_", ".")) if (optimizer == "sam" and rho_str is not None) else None
+
+    snseg = m.group("snseg")
+    sn_enabled = snseg.startswith("sn")
+    coeff_str = m.group("coeff")
+    coeff = float(coeff_str.replace("_", ".")) if (sn_enabled and coeff_str is not None) else None
+
+    seed = int(m.group("seed"))
+    ts = m.group("ts")
+
+    return {
+        "model": model_name,
+        "dataset": dataset_name,
+        "optimizer": optimizer,
+        "sam_rho": sam_rho,
+        "sn": sn_enabled,
+        "coeff": coeff,
+        "seed": seed,
+        "timestamp": ts,
+    }
+#==============================
+
+
+
 if __name__ == "__main__":
 
     # =========================
@@ -317,7 +384,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--checkpoint-path",
         type=str,
-        default=None,
+        #default=None,
+        required=True,
         help=(
             "사용자가 지정한 체크포인트 파일 경로. 지정 시 DDU의 기본 저장 규칙(model_load_name..._350.model)을 무시하고 "
             "이 파일을 직접 로드함. 예: ./Models/resnet18_cifar10_sgd_seed1_last.model"
@@ -359,8 +427,62 @@ if __name__ == "__main__":
         help="결과를 저장할 json 파일명(또는 경로). 미지정 시 기존 규칙 res_{...}.json 사용.",
     )
 
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default="evaluate_results",
+        help="평가 결과(json)를 저장할 디렉터리(없으면 생성)",
+    )
+    parser.add_argument(
+        "--optimizer",
+        type=str,
+        default=None,
+        help="학습 시 사용한 optimizer (폴더 파싱 시 자동 채워짐)",
+    )
+    parser.add_argument(
+        "--sam-rho",
+        type=float,
+        default=None,
+        help="SAM 사용 시 rho 값 (폴더 파싱 시 자동 채워짐)",
+    )
+    parser.add_argument(
+        "--no-infer-from-path",
+        dest="infer_from_path",
+        action="store_false",
+        help="checkpoint 경로에서 학습 설정을 자동 파싱하지 않음",
+    )
+    parser.set_defaults(infer_from_path=True)
+#===============================================
     args = parser.parse_args()
+    
+    #추가
+    # [추가] --checkpoint-path를 주면 train_results 폴더명에서 학습 설정(model/dataset/opt/sn/seed)을 자동 파싱합니다.
+    #        (사용자가 --model/--dataset/--seed 등을 직접 넣지 않아도 되도록)
+    run_info = None
+    if args.checkpoint_path is not None and args.infer_from_path:
+        run_info = parse_training_run_from_path(args.checkpoint_path)
 
+        # [변경] 학습 설정 자동 주입
+        args.model = run_info.get("model", args.model)
+        args.dataset = run_info.get("dataset", args.dataset)
+        args.sn = run_info.get("sn", args.sn)
+        if run_info.get("coeff") is not None:
+            args.coeff = run_info["coeff"]
+        args.seed = run_info.get("seed", args.seed)
+
+        # [추가] 결과 파일명 생성 등에 사용
+        args.train_optimizer = run_info.get("optimizer", None)
+        args.train_sam_rho = run_info.get("sam_rho", None)
+
+        print(f"[AUTO-INFER] Parsed training run info from path: {run_info}")
+
+    # [추가] seed가 여전히 None이면(파싱 실패/미지정) 안전하게 중단
+    if args.seed is None:
+        raise ValueError(
+            "Seed is not set. Provide --checkpoint-path in train_results format or pass --seed explicitly."
+        )
+
+    #==========
     cuda = torch.cuda.is_available()
 
     print("Parsed args", args)
@@ -446,15 +568,21 @@ if __name__ == "__main__":
             batch_size=args.batch_size, augment=args.data_aug, val_seed=(args.seed + i), val_size=0.1, pin_memory=args.gpu,
         )
 
-        if args.checkpoint_path is not None:
+        '''if args.checkpoint_path is not None:
             ckpt_path = args.checkpoint_path.format(run=(i + 1), seed=(args.seed + i))
         else:
             ckpt_path = os.path.join(
                 args.load_loc,
                 "Run" + str(i + 1),
                 model_load_name(args.model, args.sn, args.mod, args.coeff, args.seed, i) + "_350.model",
-            )
-
+            )'''
+        #추가
+        ckpt_path = args.checkpoint_path.format(run=(i + 1), seed=(args.seed + i))
+        if not ckpt_path.endswith(".model"):
+            raise ValueError(f"Checkpoint 파일 확장자는 .model 이어야 합니다: {ckpt_path}")
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(f"Checkpoint 파일을 찾을 수 없습니다: {ckpt_path}")
+        #=========
         if args.model not in models:
             raise ValueError(f"Unknown model '{args.model}'. Available: {list(models.keys())}")
 
@@ -566,7 +694,9 @@ if __name__ == "__main__":
         se = float(torch.std(t) / math.sqrt(max(t.shape[0], 1)))
         return mean, se
 
-    res_dict = {"mean": {}, "std": {}, "values": {}, "info": vars(args)}
+    #[제거]res_dict = {"mean": {}, "std": {}, "values": {}, "info": vars(args)}
+    #[추가]
+    res_dict = {"mean": {}, "std": {}, "values": {}, "info": vars(args), "train_run_info": run_info}
 
     res_dict["mean"]["accuracy"], res_dict["std"]["accuracy"] = mean_se(accuracies)
     res_dict["mean"]["ece"], res_dict["std"]["ece"] = mean_se(eces)
@@ -590,19 +720,61 @@ if __name__ == "__main__":
         res_dict["values"][f"{name}_auroc"] = aurocs
         res_dict["values"][f"{name}_auprc"] = auprcs
 
+    #[추가]
+    os.makedirs(args.results_dir, exist_ok=True)
+    eval_timestamp = datetime.datetime.now().strftime("%m%d%H%M")
+    #====================================
     if args.result_json is not None:
         out_json = args.result_json
+        #[추가]
+        if not os.path.isabs(out_json):
+            out_json = os.path.join(args.results_dir, out_json)
+           
     else:
-        out_json = (
-            "res_"
-            + model_save_name(args.model, args.sn, args.mod, args.coeff, args.seed)
-            + "_"
-            + args.model_type
-            + "_"
-            + args.dataset
-            + "_"
-            + args.ood_dataset
-            + ".json"
+        train_model = run_info.get("model") if run_info else args.model
+        train_dataset = run_info.get("dataset") if run_info else args.dataset
+
+        optimizer = None
+        if run_info is not None:
+            optimizer = run_info.get("optimizer")
+        if optimizer is None:
+            optimizer = getattr(args, "optimizer", None)
+        if optimizer is None and hasattr(args, "optimiser"):
+            optimizer = getattr(args, "optimiser")
+        optimizer = optimizer or "opt"
+
+        sam_rho_str = None
+        if run_info is not None:
+            sam_rho_str = run_info.get("sam_rho_str")
+        if sam_rho_str is None and optimizer == "sam":
+            sam_rho_val = getattr(args, "sam_rho", None)
+            if sam_rho_val is not None:
+                sam_rho_str = str(sam_rho_val).replace(".", "_")
+
+        sn_enabled = run_info.get("sn") if run_info is not None else args.sn
+        coeff_str = None
+        if run_info is not None:
+            coeff_str = run_info.get("coeff_str")
+        if coeff_str is None and sn_enabled:
+            coeff_val = getattr(args, "coeff", None)
+            if coeff_val is not None:
+                coeff_str = str(coeff_val).replace(".", "_")
+
+        seed_val = run_info.get("seed") if run_info is not None else args.seed
+
+        train_tag = f"{train_model}_{train_dataset}_{optimizer}"
+        if optimizer == "sam" and sam_rho_str is not None:
+            train_tag += f"_rho{sam_rho_str}"
+        if sn_enabled:
+            coeff_seg = coeff_str or ""
+            train_tag += f"_sn{coeff_seg}"
+        else:
+            train_tag += "_nosn"
+        train_tag += f"_seed{seed_val}"
+
+        out_json = os.path.join(
+            args.results_dir,
+            f"{train_tag}_ood_{args.ood_dataset}_{eval_timestamp}.json",
         )
 
     with open(out_json, "w") as f:

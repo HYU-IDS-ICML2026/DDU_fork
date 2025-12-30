@@ -16,6 +16,8 @@ Script for training a single model for OOD detection.
    - --output-name으로 최종 저장 파일명을 지정 가능
    - 미지정 시 "{model}_{dataset}_{opt}_rho{rho}_last.model" 형태로 자동 생성
 """
+#train.py저장폴더에 겹치지않게 시간정보추가
+from datetime import datetime
 
 import os
 import json
@@ -83,6 +85,29 @@ def auto_output_name(args, optimizer_type: str, sam_rho: float) -> str:
         rho_txt = str(sam_rho).replace(".", "_")
         return f"{args.model}_{args.dataset}_sam_rho{rho_txt}_last.model"
     return f"{args.model}_{args.dataset}_sgd_last.model"
+
+
+# train.py 학습 결과 저장 폴더명 규칙 및 생성
+def build_run_directory(args, optimizer_type: str, sam_rho: float) -> str:
+    """
+    Create a unique run directory under ./train_results with the pattern:
+    model_dataset_optimizer[_rhoX]_sn{coeff|nosn}_seed{seed}_{MMDD_HHMMSS}
+    """
+
+    base_dir = os.path.join(args.save_loc, "")
+    os.makedirs(base_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%m%d_%H%M%S")
+    parts = [args.model, args.dataset, optimizer_type]
+    if optimizer_type == "sam":
+        parts.append(f"rho{str(sam_rho).replace('.', '_')}")
+    sn_part = f"sn{str(args.coeff).replace('.', '_')}" if args.sn else "nosn"
+    parts.extend([sn_part, f"seed{args.seed}", timestamp])
+    run_dir = os.path.join(base_dir, "_".join(parts))
+
+    os.makedirs(run_dir, exist_ok=True)
+    return run_dir
+
 
 
 def train_one_epoch_sgd(net, loader, optimizer, device, criterion):
@@ -242,8 +267,18 @@ if __name__ == "__main__":
     # -------------------------
     # Logging / Saving
     # -------------------------
-    os.makedirs(args.save_loc, exist_ok=True)
-    stats_dir = os.path.join(args.save_loc, "stats_logging")
+    
+    #기존 부분 제거
+    """os.makedirs(args.save_loc, exist_ok=True)
+    stats_dir = os.path.join(args.save_loc, "stats_logging")"""
+    
+    #[추가]
+    run_dir = build_run_directory(args, optimizer_type, sam_rho if sam_rho is not None else 0.0)
+    print(f"[SAVE] Run directory: {run_dir}")
+
+    stats_dir = os.path.join(run_dir, "stats_logging")
+    
+    #[기존]
     os.makedirs(stats_dir, exist_ok=True)
 
     writer = SummaryWriter(stats_dir)
@@ -285,19 +320,25 @@ if __name__ == "__main__":
         # 주기 저장(원본 기능 유지)
         if (epoch + 1) % args.save_interval == 0:
             ckpt_name = f"{run_tag}_ep{epoch+1}.model"
-            ckpt_path = os.path.join(args.save_loc, ckpt_name)
+            '''ckpt_path = os.path.join(args.save_loc, ckpt_name)'''
+            #[변경 사항] run_dir 사용
+            ckpt_path = os.path.join(run_dir, ckpt_name)
             torch.save(net.state_dict(), ckpt_path)
             print("Checkpoint saved to:", ckpt_path)
 
     # 최종(last) 저장: output-name 사용
-    last_path = os.path.join(args.save_loc, output_name)
+    '''last_path = os.path.join(args.save_loc, output_name)'''
+    #[변경 사항] run_dir 사용
+    last_path = os.path.join(run_dir, output_name)
     torch.save(net.state_dict(), last_path)
     print("Final model saved to:", last_path)
 
     writer.close()
 
     # loss json도 output-name 기반으로 저장
-    loss_json_path = os.path.join(args.save_loc, output_name.replace(".model", "") + "_train_loss.json")
+    '''loss_json_path = os.path.join(args.save_loc, output_name.replace(".model", "") + "_train_loss.json")'''
+    #[변경 사항] run_dir 사용
+    loss_json_path = os.path.join(run_dir, output_name.replace(".model", "") + "_train_loss.json")
     with open(loss_json_path, "w") as f:
         json.dump(training_set_loss, f)
     print("Train loss json saved to:", loss_json_path)

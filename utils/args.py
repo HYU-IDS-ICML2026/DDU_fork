@@ -20,7 +20,11 @@ def training_args():
     weight_decay = 5e-4
     log_interval = 50
     save_interval = 25
-    save_loc = "./"
+    #save_loc = "./"
+    # [변경] 기본 저장 루트를 train_results로 이동
+    # - train.py에서 run별 하위 폴더를 생성하므로 여기서는 상위 루트만 지정
+    save_loc = "./train_results"
+    
     saved_model_name = "resnet50_350.model"
     epoch = 350
     first_milestone = 150  # Milestone for change in lr
