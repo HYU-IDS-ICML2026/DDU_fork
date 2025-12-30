@@ -366,6 +366,7 @@ def parse_training_run_from_path(path: str):
         "dataset": dataset_name,
         "optimizer": optimizer,
         "sam_rho": sam_rho,
+        "sam_rho_str": rho_str,
         "sn": sn_enabled,
         "coeff": coeff,
         "seed": seed,
