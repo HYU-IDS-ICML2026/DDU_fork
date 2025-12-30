@@ -1,5 +1,5 @@
-[추가]geometry.py
-geometry.py (Feature Geometry / Neural Collapse 측정)
+**[추가]geometry.py**
+**geometry.py (Feature Geometry / Neural Collapse 측정)**
 
 geometry.py는 이미지 분류 모델의 penultimate layer(feature vector) 를 ID 데이터(학습에 사용한 분포)에서 추출하여, optimizer(SGD vs SAM) 변화에 따른 feature space 기하구조 차이를 정량화하는 스크립트입니다.
 
