@@ -26,6 +26,7 @@ import data.ood_detection.tiny_imagenet as tiny_imagenet
 from net.resnet import resnet50, resnet18
 from net.wide_resnet import wrn
 from net.vgg import vgg16
+
 import net.spectral_normalization.spectral_norm_conv_inplace as sn_lib
 
 # =============================================================================
@@ -101,6 +102,7 @@ def get_args():
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--gpu", action="store_true")
+    parser.add_argument("--gpu-id", type=int, default=0, help="GPU ID to use (default: 0)")
     parser.add_argument("--output_dir", type=str, default=".", help="Save directory")
     return parser.parse_args()
 
@@ -116,7 +118,12 @@ def main():
     
     torch.manual_seed(args.seed)
     cuda = args.gpu and torch.cuda.is_available()
-    device = torch.device("cuda" if cuda else "cpu")
+    if cuda:
+        torch.cuda.set_device(args.gpu_id)
+        device = torch.device(f"cuda:{args.gpu_id}")
+        print(f"Using GPU {args.gpu_id}")
+    else:
+        device = torch.device("cpu")
     
     print(f"Target Checkpoint: {args.checkpoint_path}")
     if not os.path.isfile(args.checkpoint_path):
@@ -264,6 +271,7 @@ def main():
         print(f"Error computing geometry stats: {e}")
 
     # 8. Save
+    os.makedirs(args.output_dir, exist_ok=True)
     ckpt_name = os.path.basename(args.checkpoint_path)
     save_name = f"res_{ckpt_name}_{args.ood_dataset}.json"
     save_path = os.path.join(args.output_dir, save_name)

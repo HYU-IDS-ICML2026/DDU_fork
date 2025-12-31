@@ -17,7 +17,7 @@ import data.dirty_mnist as dirty_mnist
 # Import network models
 from net.lenet import lenet
 from net.resnet import resnet18, resnet50
-from net.wide_resnet import wrn
+from net.wide_resnet import wrn                                                                                                     
 from net.vgg import vgg16
 
 # Import train and validation utilities
@@ -61,7 +61,12 @@ if __name__ == "__main__":
     torch.manual_seed(args.seed)
 
     cuda = torch.cuda.is_available() and args.gpu
-    device = torch.device("cuda" if cuda else "cpu")
+    if cuda:
+        torch.cuda.set_device(args.gpu_id)
+        device = torch.device(f"cuda:{args.gpu_id}")
+        print(f"Using GPU {args.gpu_id}")
+    else:
+        device = torch.device("cpu")
     print("CUDA set: " + str(cuda))
 
     num_classes = dataset_num_classes[args.dataset]
@@ -76,8 +81,7 @@ if __name__ == "__main__":
     )
 
     if args.gpu:
-        net.cuda()
-        net = torch.nn.DataParallel(net, device_ids=range(torch.cuda.device_count()))
+        net.to(device)
         cudnn.benchmark = True
 
     opt_params = net.parameters()
@@ -110,7 +114,7 @@ if __name__ == "__main__":
         optimizer, milestones=[args.first_milestone, args.second_milestone], gamma=0.1
     )
 
-    train_loader, _ = dataset_loader[args.dataset].get_train_valid_loader(
+    train_loader, valid_loader = dataset_loader[args.dataset].get_train_valid_loader(
         root=args.dataset_root,
         batch_size=args.train_batch_size,
         augment=args.data_aug,
@@ -123,6 +127,8 @@ if __name__ == "__main__":
     writer = SummaryWriter(args.save_loc + "stats_logging/")
 
     training_set_loss = {}
+    validation_set_loss = {}
+    validation_set_accuracy = {}
 
     save_name = model_save_name(
         args.model, 
@@ -145,6 +151,16 @@ if __name__ == "__main__":
         training_set_loss[epoch] = train_loss
         writer.add_scalar(save_name + "_train_loss", train_loss, (epoch + 1))
 
+        # Validation at the end of each epoch
+        print("Validating epoch", epoch)
+        val_loss, val_accuracy = test_single_epoch(epoch, net, valid_loader, device, loss_function=args.loss_function)
+        validation_set_loss[epoch] = val_loss
+        validation_set_accuracy[epoch] = val_accuracy
+        
+        writer.add_scalar(save_name + "_val_loss", val_loss, (epoch + 1))
+        writer.add_scalar(save_name + "_val_accuracy", val_accuracy, (epoch + 1))
+        print(f"Epoch {epoch}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+
         scheduler.step()
 
         if (epoch + 1) % args.save_interval == 0:
@@ -156,5 +172,17 @@ if __name__ == "__main__":
     print("Model saved to ", saved_name)
 
     writer.close()
-    with open(saved_name[: saved_name.rfind("_")] + "_train_loss.json", "a") as f:
-        json.dump(training_set_loss, f)
+
+    # Save hyperparameters
+    args_dict = {k: v for k, v in vars(args).items() if isinstance(v, (int, float, str, bool, list, dict, type(None)))}
+    with open(saved_name[: saved_name.rfind("_")] + "_args.json", "w") as f:
+        json.dump(args_dict, f, indent=4)
+
+    with open(saved_name[: saved_name.rfind("_")] + "_train_loss.json", "w") as f:
+        json.dump(training_set_loss, f, indent=4)
+    
+    with open(saved_name[: saved_name.rfind("_")] + "_val_loss.json", "w") as f:
+        json.dump(validation_set_loss, f, indent=4)
+    
+    with open(saved_name[: saved_name.rfind("_")] + "_val_accuracy.json", "w") as f:
+        json.dump(validation_set_accuracy, f, indent=4)

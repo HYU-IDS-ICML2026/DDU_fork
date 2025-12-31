@@ -89,6 +89,8 @@ def gmm_fit(embeddings, labels, num_classes):
             [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
         )
 
+    gmm = None
+    jitter_eps = None
     with torch.no_grad():
         for jitter_eps in JITTERS:
             try:
@@ -98,12 +100,15 @@ def gmm_fit(embeddings, labels, num_classes):
                 gmm = torch.distributions.MultivariateNormal(
                     loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
                 )
+                break
             except RuntimeError as e:
                 if "cholesky" in str(e):
                     continue
             except ValueError as e:
                 if "The parameter covariance_matrix has invalid values" in str(e):
                     continue
-            break
+
+    if gmm is None:
+        raise RuntimeError("Failed to fit GMM: all jitter values failed")
 
     return gmm, jitter_eps

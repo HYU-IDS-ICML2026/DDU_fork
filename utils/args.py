@@ -54,6 +54,7 @@ def training_args():
     )
 
     parser.add_argument("--no-gpu", action="store_false", dest="gpu", help="Use GPU")
+    parser.add_argument("--gpu-id", type=int, default=0, dest="gpu_id", help="GPU ID to use (default: 0)")
     parser.add_argument("--model", type=str, default=model, dest="model", help="Model to train")
 
     parser.add_argument(

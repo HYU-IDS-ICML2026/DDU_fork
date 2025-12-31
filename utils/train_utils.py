@@ -81,9 +81,11 @@ def train_single_epoch(
 def test_single_epoch(epoch, model, test_val_loader, device, loss_function="cross_entropy"):
     """
     Util method for testing a model for a single epoch.
+    Returns loss and accuracy.
     """
     model.eval()
     loss = 0
+    correct = 0
     num_samples = 0
     with torch.no_grad():
         for data, labels in test_val_loader:
@@ -92,10 +94,17 @@ def test_single_epoch(epoch, model, test_val_loader, device, loss_function="cros
 
             logits = model(data)
             loss += loss_function_dict[loss_function](logits, labels).item()
+            
+            # Calculate accuracy
+            pred = logits.argmax(dim=1, keepdim=True)
+            correct += pred.eq(labels.view_as(pred)).sum().item()
+            
             num_samples += len(data)
 
-    print("======> Test set loss: {:.4f}".format(loss / num_samples))
-    return loss / num_samples
+    avg_loss = loss / num_samples
+    accuracy = correct / num_samples
+    print("======> Validation set loss: {:.4f}, Accuracy: {:.4f}".format(avg_loss, accuracy))
+    return avg_loss, accuracy
 
 
 def model_save_name(model_name, sn, mod, coeff, seed, optimizer="sgd", rho=0.0):
