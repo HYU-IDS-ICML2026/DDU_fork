@@ -21,3 +21,5 @@ train_sgd.log
 
 models/
 logs/
+
+key.txt

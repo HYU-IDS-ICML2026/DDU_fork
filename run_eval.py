@@ -1,7 +1,7 @@
 import os
 import glob
 
-MODEL_DIR = "models/wide_resnet"
+MODEL_DIR = "models/asdf"
 OOD_LIST = ["cifar100", "svhn", "mnist", "tiny_imagenet"]
 LOG_FILE = "evaluation_all.log"
 
