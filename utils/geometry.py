@@ -1,136 +1,187 @@
 import torch
 import numpy as np
+import math
 
+# ---------------------------------------------------------
+# Helper Functions (JIN Branch Logic)
+# ---------------------------------------------------------
+def fro_norm(x: torch.Tensor) -> torch.Tensor:
+    return torch.norm(x, p="fro")
+
+def make_etf_gram(K: int, device, dtype) -> torch.Tensor:
+    I = torch.eye(K, device=device, dtype=dtype)
+    ones = torch.ones((K, K), device=device, dtype=dtype)
+    return (I - ones / K) / math.sqrt(K - 1)
+
+def pairwise_mean_dist(M: torch.Tensor) -> torch.Tensor:
+    K = M.shape[0]
+    D = torch.cdist(M, M, p=2)
+    idx = torch.triu_indices(K, K, offset=1)
+    return D[idx[0], idx[1]].mean()
+
+def effective_rank_from_cov(cov: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    evals = torch.linalg.eigvalsh(cov)
+    evals = torch.clamp(evals, min=0.0)
+    s = evals.sum()
+    if s < eps:
+        return torch.tensor(0.0, device=cov.device, dtype=cov.dtype)
+    p = evals / (s + eps)
+    ent = -(p * torch.log(p + eps)).sum()
+    return torch.exp(ent)
+
+def anisotropy_lambda1_over_trace(cov: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
+    evals = torch.linalg.eigvalsh(cov)
+    evals = torch.clamp(evals, min=0.0)
+    tr = evals.sum()
+    if tr < eps:
+        return torch.tensor(0.0, device=cov.device, dtype=cov.dtype)
+    return evals[-1] / (tr + eps)
+
+# ---------------------------------------------------------
+# Main Calculation Function
+# ---------------------------------------------------------
 def get_geometry_stats(model, loader, device, num_classes):
     """
-    마지막 피쳐층의 기하학적 구조(Intra-class, Inter-class, Anisotropy, Effective Rank, NC1~4)를 분석합니다.
+    Main Branch의 구조(Feature List)를 유지하여 NC4 계산을 지원하되,
+    NC1~NC3 및 기타 지표 계산은 JIN Branch의 정확한 수식을 적용합니다.
     """
     model.eval()
-    
-    # 1. Feature 및 Label 추출
+    model.to(device)
+    dtype = torch.float64  # 정밀도를 위해 float64 사용
+
+    # 1. Feature Extraction (Main Branch Style)
     features_list = []
     labels_list = []
     
-    # 모델의 Linear layer 가중치 가져오기 (NC3 측정용)
+    # Weight 추출
     if hasattr(model, 'module'):
-        if hasattr(model.module, 'fc'): classifier_weights = model.module.fc.weight.data
-        elif hasattr(model.module, 'linear'): classifier_weights = model.module.linear.weight.data
-        else: classifier_weights = None
+        fc_layer = model.module.fc if hasattr(model.module, 'fc') else model.module.linear
     else:
-        if hasattr(model, 'fc'): classifier_weights = model.fc.weight.data
-        elif hasattr(model, 'linear'): classifier_weights = model.linear.weight.data
-        else: classifier_weights = None
+        fc_layer = model.fc if hasattr(model, 'fc') else model.linear
     
+    # Hook 설정
+    feats_buf = {}
+    def fc_prehook(module, inputs):
+        feats_buf["h"] = inputs[0].detach()
+    handle = fc_layer.register_forward_pre_hook(fc_prehook)
+
     with torch.no_grad():
         for data, target in loader:
             data = data.to(device)
-            _ = model(data) # Forward pass를 통해 self.feature 업데이트
-            
-            # 모델 내부 feature 가져오기
-            if hasattr(model, 'module'): features = model.module.feature
-            else: features = model.feature
-            
-            features_list.append(features.cpu())
+            _ = model(data)
+            features_list.append(feats_buf["h"].cpu()) # CPU로 이동하여 저장
             labels_list.append(target.cpu())
+            
+    handle.remove()
 
-    features = torch.cat(features_list).to(device) # (N, D)
-    labels = torch.cat(labels_list).to(device)     # (N,)
+    if not features_list:
+        return {}
+
+    features = torch.cat(features_list).to(dtype=dtype) # (N, D)
+    labels = torch.cat(labels_list)
     
     N, D = features.shape
+    K = num_classes
+
+    # 2. Statistics Calculation (Centering 적용)
+    # Global Mean
+    global_mean = features.mean(dim=0) # (D,)
     
-    # 2. 클래스별 통계량 계산
-    class_means = []
-    within_class_scatter = 0
+    # Class Means & Covariances
+    class_means = torch.zeros((K, D), dtype=dtype)
+    within_class_scatter = torch.zeros((D, D), dtype=dtype)
     anisotropies = []
+    eff_ranks = []
     
-    for c in range(num_classes):
+    # NC4 계산을 위한 Class Means (Raw)
+    # JIN 로직은 Centering이 핵심이지만, NC4 거리 계산은 Raw Mean으로 해도 무방
+    # (어차피 Global Mean 빼도 거리는 동일)
+    
+    for c in range(K):
         idxs = (labels == c)
         if idxs.sum() == 0: continue
-            
+        
         feats_c = features[idxs]
         mu_c = feats_c.mean(dim=0)
-        class_means.append(mu_c)
+        class_means[c] = mu_c
         
-        # 공분산 및 Trace 계산 (Within-Class Covariance)
-        centered = feats_c - mu_c
-        cov_c = torch.matmul(centered.T, centered) / (feats_c.shape[0] - 1)
+        # Within-Class Scatter (Sigma_W의 구성 요소)
+        centered_c = feats_c - mu_c
+        cov_c = torch.matmul(centered_c.T, centered_c) # Sum of squares
+        within_class_scatter += cov_c
         
-        trace_c = torch.trace(cov_c)
-        within_class_scatter += trace_c
+        # Anisotropy & Effective Rank (JIN Logic)
+        # Covariance matrix for this class
+        actual_cov_c = cov_c / (feats_c.shape[0]) # biased or unbiased choice (JIN uses 1/n)
+        actual_cov_c = 0.5 * (actual_cov_c + actual_cov_c.T) # Symmetrize
         
-        # Anisotropy (Lambda_max / Trace)
-        eigvals = torch.linalg.eigvalsh(cov_c)
-        lambda_max = eigvals[-1]
-        anisotropy_c = lambda_max / trace_c if trace_c > 1e-8 else torch.tensor(0.0, device=device)
-        anisotropies.append(anisotropy_c)
+        anisotropies.append(anisotropy_lambda1_over_trace(actual_cov_c).item())
+        eff_ranks.append(effective_rank_from_cov(actual_cov_c).item())
 
-    class_means = torch.stack(class_means) # (K, D)
+    # Sigma_W & Sigma_B
+    Sigma_W = within_class_scatter / N
     
-    # [지표 1 & NC1 분자] Within-class variance (Mean Trace of Sigma_W)
-    mean_within_class_var = (within_class_scatter / num_classes).item()
-    
-    # [지표 2] Inter-class mean distance
-    dist_matrix = torch.cdist(class_means, class_means, p=2)
-    sum_dist = dist_matrix.sum()
-    n_pairs = num_classes * (num_classes - 1)
-    mean_inter_class_dist = (sum_dist / n_pairs).item()
-    
-    # [지표 3] Anisotropy Mean
-    mean_anisotropy = torch.tensor(anisotropies).mean().item()
-    
-    # [지표 4] Effective Rank
-    global_mean = features.mean(dim=0)
-    features_centered = features - global_mean
-    total_cov = torch.matmul(features_centered.T, features_centered) / (N - 1)
-    total_eigvals = torch.linalg.eigvalsh(total_cov)
-    total_eigvals = total_eigvals[total_eigvals > 1e-6] # 노이즈 제거
-    
-    if len(total_eigvals) > 0:
-        p_i = total_eigvals / total_eigvals.sum()
-        entropy = -torch.sum(p_i * torch.log(p_i + 1e-12))
-        effective_rank = torch.exp(entropy).item()
-    else:
-        effective_rank = 0.0
+    Sigma_B = torch.zeros((D, D), dtype=dtype)
+    for c in range(K):
+        # Centering 적용 (mu_c - mu_G)
+        dc = (class_means[c] - global_mean).view(D, 1)
+        Sigma_B += dc @ dc.t()
+    Sigma_B /= K
 
-    # [추가 지표: NC1] Variability Collapse (Trace(Sigma_W) / Trace(Sigma_B))
-    # Between-Class Covariance (Sigma_B) 계산
-    global_mean_of_means = class_means.mean(dim=0)
-    centered_means = class_means - global_mean_of_means
-    cov_between = torch.matmul(centered_means.T, centered_means) / (num_classes - 1)
-    between_class_scatter = torch.trace(cov_between)
-    
-    if between_class_scatter > 1e-8:
-        nc1_collapse = mean_within_class_var / between_class_scatter.item()
-    else:
-        nc1_collapse = 0.0
+    # 3. Metrics Calculation (JIN Formula)
 
-    # [추가 지표: NC2] Cosine Sim of Class Means
-    means_norm = class_means / class_means.norm(dim=1, keepdim=True)
-    cosine_sim_matrix = torch.mm(means_norm, means_norm.T)
-    mask = ~torch.eye(num_classes, dtype=torch.bool, device=device)
-    mean_cosine_sim = cosine_sim_matrix[mask].mean().item()
+    # [NC1] Variability Collapse
+    # JIN Formula: trace(Sigma_W @ pinv(Sigma_B)) / K
+    SigmaB_pinv = torch.linalg.pinv(Sigma_B)
+    nc1_val = (torch.trace(Sigma_W @ SigmaB_pinv) / K).item()
 
-    # [추가 지표: NC3] Feature-Weight Alignment
-    mean_feature_weight_alignment = 0.0
-    if classifier_weights is not None:
-        W = classifier_weights.to(device)
-        W_norm = W / W.norm(dim=1, keepdim=True)
-        alignment_scores = torch.diag(torch.mm(means_norm, W_norm.T))
-        mean_feature_weight_alignment = alignment_scores.mean().item()
+    # [NC2] Simplex ETF (JIN Formula: Norm Difference)
+    W = fc_layer.weight.detach().to(dtype=dtype).cpu()
+    WWt = W @ W.t()
+    G_W = WWt / (fro_norm(WWt) + 1e-12)
+    G_ETF = make_etf_gram(K, device=G_W.device, dtype=dtype)
+    nc2_etf_dist = fro_norm(G_W - G_ETF).item()
 
-    # [추가 지표: NC4] Simplification to NCC (Nearest Class Center Accuracy)
-    # 각 샘플에 대해 가장 가까운 클래스 평균을 예측으로 사용
-    dists = torch.cdist(features, class_means, p=2) # (N, K)
-    ncc_preds = torch.argmin(dists, dim=1) # (N,)
-    nc4_accuracy = (ncc_preds == labels).float().mean().item()
+    # [NC2 - Compatibility] Mean Cosine Sim (Centered)
+    # 기존 코드의 출력 포맷을 유지하되, Centering을 적용하여 올바르게 계산
+    M_centered = class_means - global_mean
+    M_norm = M_centered / (M_centered.norm(dim=1, keepdim=True) + 1e-12)
+    cos_sim = torch.mm(M_norm, M_norm.t())
+    mask = ~torch.eye(K, dtype=torch.bool)
+    nc2_mean_sim = cos_sim[mask].mean().item()
+
+    # [NC3] Alignment (JIN Formula: Norm Difference)
+    H = (class_means - global_mean).t()
+    WH = W @ H
+    G_WH = WH / (fro_norm(WH) + 1e-12)
+    nc3_val = fro_norm(G_WH - G_ETF).item()
+
+    # [NC4] NCC Accuracy (Main Branch Feature)
+    # Features와 Class Means 사이의 거리를 계산
+    # (둘 다 Raw 값이므로 거리 계산에 문제 없음)
+    dists = torch.cdist(features.to(device).float(), class_means.to(device).float(), p=2)
+    preds = torch.argmin(dists, dim=1)
+    nc4_acc = (preds == labels.to(device)).float().mean().item()
+
+    # 기타 지표
+    mean_within_var = torch.trace(Sigma_W).item()
+    inter_dist = pairwise_mean_dist(class_means).item()
+    mean_anisotropy = float(np.mean(anisotropies)) if anisotropies else 0.0
+    mean_eff_rank = float(np.mean(eff_ranks)) if eff_ranks else 0.0
 
     return {
-        "Within-class Variance": mean_within_class_var,
-        "Inter-class Distance": mean_inter_class_dist,
+        "Within-class Variance": mean_within_var,
+        "Inter-class Distance": inter_dist,
         "Anisotropy": mean_anisotropy,
-        "Effective Rank": effective_rank,
-        "NC1 (Variability)": nc1_collapse,   # Trace(Sw)/Trace(Sb)
-        "NC2 (Mean Sim)": mean_cosine_sim,
-        "NC3 (Alignment)": mean_feature_weight_alignment,
-        "NC4 (NCC Acc)": nc4_accuracy         # NCC Classifier Accuracy
+        "Effective Rank": mean_eff_rank,
+        
+        "NC1 (Variability)": nc1_val,
+        
+        # 기존 호환성 유지 (수정된 Centered Mean Sim)
+        "NC2 (Mean Sim)": nc2_mean_sim,
+        # JIN 브랜치의 정확한 지표 (ETF 거리)
+        "NC2 (ETF Dist)": nc2_etf_dist,
+        
+        "NC3 (Alignment)": nc3_val,
+        "NC4 (NCC Acc)": nc4_acc
     }

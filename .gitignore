@@ -23,3 +23,6 @@ models/
 logs/
 
 key.txt
+*.log
+*.model
+*_logging/
