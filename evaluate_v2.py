@@ -179,9 +179,9 @@ def main():
     dim = model_to_num_dim[args.model]
     
     # Using CPU to avoid OOM during feature collection
-    train_feats, train_lbls = get_embeddings(net, train_loader, num_dim=dim, dtype=torch.float, device=device, storage_device=torch.device('cpu'))
-    test_feats, _ = get_embeddings(net, test_loader, num_dim=dim, dtype=torch.float, device=device, storage_device=torch.device('cpu'))
-    ood_feats, _ = get_embeddings(net, ood_test_loader, num_dim=dim, dtype=torch.float, device=device, storage_device=torch.device('cpu'))
+    train_feats, train_lbls = get_embeddings(net, train_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=torch.device('cpu'))
+    test_feats, _ = get_embeddings(net, test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=torch.device('cpu'))
+    ood_feats, _ = get_embeddings(net, ood_test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=torch.device('cpu'))
     
     test_logits, _ = get_logits_labels(net, test_loader, device)
     ood_logits, _ = get_logits_labels(net, ood_test_loader, device)

@@ -19,8 +19,8 @@ for model in model_paths:
                     --ood_dataset {ood} \
                     --model wide_resnet \
                     --sn \
-                    --mod \
                     --coeff 3.0 \
+                    --mod \
                     --seed 0 \
                     --batch_size 128\
                     --gpu >> {LOG_FILE} 2>&1"
