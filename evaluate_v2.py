@@ -3,7 +3,7 @@ Script to evaluate a single model with explicit path definition.
 Verified fixes:
 1. Removed DataParallel (Fixes feature extraction).
 2. Corrected Score Signs (Energy, Mahalanobis, kNN).
-3. Added DDU (GMM) Evaluation.
+3. Added DDU (GMM) Evaluation (Identical logic to evaluate.py).
 4. Added NumpyEncoder for JSON serialization.
 5. Includes SN Hook Metadata Patch.
 """
@@ -51,7 +51,8 @@ from metrics.uncertainty_confidence import entropy, logsumexp, confidence
 from metrics.ood_metrics import get_roc_auc
 
 from utils.geometry import get_geometry_stats
-from utils.gmm_utils import get_embeddings, gmm_fit, gmm_get_logits
+# [수정] gmm_evaluate 추가 (evaluate.py와 동일한 함수 사용)
+from utils.gmm_utils import get_embeddings, gmm_fit, gmm_get_logits, gmm_evaluate
 from utils.ood_scores import get_energy_score, MahalanobisScorer, KNNScorer
 from utils.temperature_scaling import ModelWithTemperature
 
@@ -115,6 +116,7 @@ def main():
     args = get_args()
     
     torch.manual_seed(args.seed)
+    
     cuda = args.gpu and torch.cuda.is_available()
     device = torch.device("cuda" if cuda else "cpu")
     
@@ -175,13 +177,15 @@ def main():
     print(f"Scaled ECE: {t_ece:.4f} (Optimal Temp: {t_model.temperature:.4f})")
 
     # 5. Extract Features for OOD
-    print("\n--- Extracting Features ---")
+    # [수정] evaluate.py와 동일하게 'Double Precision(float64)' 및 'GPU Storage' 사용
+    # GMM 피팅 시 Singular Matrix 문제를 피하기 위해 필수적임.
+    print("\n--- Extracting Features (Double Precision, GPU) ---")
     dim = model_to_num_dim[args.model]
     
-    # Using CPU to avoid OOM during feature collection
-    train_feats, train_lbls = get_embeddings(net, train_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=torch.device('cpu'))
-    test_feats, _ = get_embeddings(net, test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=torch.device('cpu'))
-    ood_feats, _ = get_embeddings(net, ood_test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=torch.device('cpu'))
+    # storage_device=device로 설정하여 GPU 메모리에 유지 (evaluate.py 방식)
+    train_feats, train_lbls = get_embeddings(net, train_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=device)
+    test_feats, _ = get_embeddings(net, test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=device)
+    ood_feats, _ = get_embeddings(net, ood_test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=device)
     
     test_logits, _ = get_logits_labels(net, test_loader, device)
     ood_logits, _ = get_logits_labels(net, ood_test_loader, device)
@@ -214,22 +218,26 @@ def main():
     print(f"Energy AUROC: {energy_auc:.4f} (T=1.0)")
 
     # (4) DDU (GMM)
+    # [수정] evaluate.py와 완전히 동일한 로직 적용
     print("Fitting GMM (DDU)...")
+    
     try:
-        # Fit GMM on Train features
+        # 1. GMM Fitting (GPU + Double)
         gmm_model, _ = gmm_fit(train_feats, train_lbls, num_classes)
         
-        # Calculate Log-Likelihoods (Density)
-        # GMM log-prob is higher for ID data.
-        ddu_id_logits = gmm_get_logits(gmm_model, test_feats)
-        ddu_ood_logits = gmm_get_logits(gmm_model, ood_feats)
+        # 2. Evaluate using gmm_evaluate (evaluate.py 방식)
+        # 로더를 통해 배치 단위로 계산하여 logits 획득
+        ddu_id_logits, _ = gmm_evaluate(net, gmm_model, test_loader, device, num_classes, device)
+        ddu_ood_logits, _ = gmm_evaluate(net, gmm_model, ood_test_loader, device, num_classes, device)
         
-        # Marginal Log-Likelihood p(x) = log(sum(exp(log_p(x|c) + log_p(c))))
-        # Assuming uniform prior p(c), this is proportional to logsumexp of class conditional log-probs.
-        ddu_id_score = torch.logsumexp(ddu_id_logits, dim=1)
-        ddu_ood_score = torch.logsumexp(ddu_ood_logits, dim=1)
+        # 3. LogSumExp & AUROC
+        # evaluate.py의 get_roc_auc_logits 내부 로직과 동일
+        ddu_id_score = logsumexp(ddu_id_logits)
+        ddu_ood_score = logsumexp(ddu_ood_logits)
         
-        ddu_auc = compute_auroc(ddu_id_score.numpy(), ddu_ood_score.numpy())
+        # .detach().cpu().numpy()로 안전하게 변환
+        ddu_auc = compute_auroc(ddu_id_score.detach().cpu().numpy(), ddu_ood_score.detach().cpu().numpy())
+        
         results["metrics"]["ddu_auroc"] = ddu_auc
         print(f"DDU (GMM) AUROC: {ddu_auc:.4f}")
     except Exception as e:
@@ -237,11 +245,13 @@ def main():
         results["metrics"]["ddu_auroc"] = 0.0
 
     # (5) Mahalanobis
+    # Mahalanobis/kNN에도 Double Precision Feature를 그대로 사용 (정밀도 이점)
+    # 필요시 .float()로 변환하여 사용 가능하나, 여기선 그대로 진행
     maha = MahalanobisScorer()
     maha.fit(train_feats, train_lbls, num_classes)
     maha_id = maha.score(test_feats)
     maha_ood = maha.score(ood_feats)
-    maha_auc = compute_auroc(maha_id.numpy(), maha_ood.numpy())
+    maha_auc = compute_auroc(maha_id.cpu().numpy(), maha_ood.cpu().numpy())
     results["metrics"]["maha_auroc"] = maha_auc
     print(f"Mahalanobis AUROC: {maha_auc:.4f}")
 
@@ -250,7 +260,7 @@ def main():
     knn.fit(train_feats)
     knn_id = knn.score(test_feats)
     knn_ood = knn.score(ood_feats)
-    knn_auc = compute_auroc(knn_id.numpy(), knn_ood.numpy())
+    knn_auc = compute_auroc(knn_id.cpu().numpy(), knn_ood.cpu().numpy())
     results["metrics"]["knn_auroc"] = knn_auc
     print(f"kNN AUROC: {knn_auc:.4f}")
 

@@ -1,7 +1,7 @@
 검증코드
-nohup python evaluate_v2.py \
-    --checkpoint_path models/wide_resnet/sam_wide_resnet_sn_3.0_mod_0_350.model \
-    --dataset cifar10 \
+CUDA_VISIBLE_DEVICES=0 nohup python evaluate_v2.py \
+    --checkpoint_path models/cifar100/cifar100_sam_0.05wide_resnet_sn_3.0_mod_0_350.model \
+    --dataset cifar100 \
     --ood_dataset mnist \
     --model wide_resnet \
     --sn \
@@ -9,7 +9,7 @@ nohup python evaluate_v2.py \
     --coeff 3.0 \
     --seed 0 \
     --batch_size 128 \
-    --gpu > evaluation_log/sgd_sn_3.0_mod_0_350.txt 2>&1 &
+    --gpu > loglogloglog.txt 2>&1 &
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

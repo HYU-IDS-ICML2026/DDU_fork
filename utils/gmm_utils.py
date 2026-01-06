@@ -82,32 +82,87 @@ def gmm_get_logits(gmm, embeddings):
     return log_probs_B_Y
 
 
+def gmm_fit(embeddings, labels, num_classes):
+    with torch.no_grad():
+        classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
+        classwise_cov_features = torch.stack(
+            [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
+        )
+
+    with torch.no_grad():
+        for jitter_eps in JITTERS:
+            try:
+                jitter = jitter_eps * torch.eye(
+                     classwise_cov_features.shape[1], device=classwise_cov_features.device, dtype=classwise_cov_features.dtype
+                 ).unsqueeze(0)
+                gmm = torch.distributions.MultivariateNormal(
+                    loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter)
+                )
+            except RuntimeError as e:
+                if "cholesky" in str(e):
+                    continue
+            except ValueError as e:
+                if "The parameter covariance_matrix has invalid values" in str(e):
+                    continue
+            break
+
+    return gmm, jitter_eps
+
+
+
+
 # def gmm_fit(embeddings, labels, num_classes):
+#     """
+#     논문 재현을 위해 Full Covariance + Jitter Loop 방식을 사용합니다.
+#     코드 구조상 발생하던 UnboundLocalError를 수정하고, NaN 발생 여부를 체크합니다.
+#     """
+#     # [진단] 데이터에 NaN이나 Inf가 있는지 먼저 확인 (피팅 실패의 주 원인)
+#     if torch.isnan(embeddings).any():
+#         raise ValueError("CRITICAL: Embeddings contain NaN values. Training diverged or data corrupted.")
+#     if torch.isinf(embeddings).any():
+#         raise ValueError("CRITICAL: Embeddings contain Inf values. Numerical overflow.")
+
 #     with torch.no_grad():
 #         classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
 #         classwise_cov_features = torch.stack(
 #             [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
 #         )
 
+#     gmm = None  # [수정] 변수 초기화 (에러 방지)
+#     final_jitter = 0
+
 #     with torch.no_grad():
 #         for jitter_eps in JITTERS:
 #             try:
 #                 jitter = jitter_eps * torch.eye(
-#                     classwise_cov_features.shape[1], device=classwise_cov_features.device,
+#                     classwise_cov_features.shape[1], device=classwise_cov_features.device, dtype=classwise_cov_features.dtype
 #                 ).unsqueeze(0)
+                
 #                 gmm = torch.distributions.MultivariateNormal(
 #                     loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
 #                 )
+#                 final_jitter = jitter_eps
+#                 break # 성공하면 루프 탈출
 #             except RuntimeError as e:
-#                 if "cholesky" in str(e):
+#                 if "cholesky" in str(e).lower():
 #                     continue
+#                 else:
+#                     raise e # Cholesky 외의 다른 에러는 출력
 #             except ValueError as e:
-#                 if "The parameter covariance_matrix has invalid values" in str(e):
+#                 if "invalid values" in str(e).lower() or "singular" in str(e).lower():
 #                     continue
-#             break
+#                 else:
+#                     raise e
 
-#     return gmm, jitter_eps
+#     # [수정] 모든 Jitter가 실패했을 경우 명확한 에러 메시지 출력
+#     if gmm is None:
+#         raise RuntimeError(
+#             f"GMM fitting failed for ALL jitters (Max: {JITTERS[-1]}). "
+#             "Even with Double Precision + GPU, the covariance matrix is degenerate. "
+#             "Check if 'num_classes' matches the data or if embeddings contain NaNs."
+#         )
 
+#     return gmm, final_jitter
 
 # def gmm_fit(embeddings, labels, num_classes):
 #     with torch.no_grad():
@@ -146,45 +201,45 @@ def gmm_get_logits(gmm, embeddings):
 
 # L2
 
-def gmm_fit(embeddings, labels, num_classes):
-    # L2 정규화 강도 (Hyperparameter)
-    # 0.1 정도면 N < D 상황에서도 매우 안정적입니다. (필요 시 조절: 0.01 ~ 0.5)
-    # 값이 클수록 '대각 공분산'이나 '단위 행렬'에 가까워지고, 작을수록 '원본(Full)'에 가까워집니다.
-    alpha = 0.1 
+# def gmm_fit(embeddings, labels, num_classes):
+#     # L2 정규화 강도 (Hyperparameter)
+#     # 0.1 정도면 N < D 상황에서도 매우 안정적입니다. (필요 시 조절: 0.01 ~ 0.5)
+#     # 값이 클수록 '대각 공분산'이나 '단위 행렬'에 가까워지고, 작을수록 '원본(Full)'에 가까워집니다.
+#     alpha = 0.1 
     
-    with torch.no_grad():
-        # 1. 각 클래스별 평균 계산
-        classwise_mean_features = torch.stack([
-            torch.mean(embeddings[labels == c], dim=0) 
-            for c in range(num_classes)
-        ])
+#     with torch.no_grad():
+#         # 1. 각 클래스별 평균 계산
+#         classwise_mean_features = torch.stack([
+#             torch.mean(embeddings[labels == c], dim=0) 
+#             for c in range(num_classes)
+#         ])
         
-        # 2. 각 클래스별 Full Covariance 계산 (Singular 상태)
-        classwise_cov_features = torch.stack([
-            centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) 
-            for c in range(num_classes)
-        ])
+#         # 2. 각 클래스별 Full Covariance 계산 (Singular 상태)
+#         classwise_cov_features = torch.stack([
+#             centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) 
+#             for c in range(num_classes)
+#         ])
 
-        # 3. L2 Regularization (Shrinkage) 적용
-        # 공식: Sigma_new = (1 - alpha) * Sigma_old + alpha * Identity
-        # 이렇게 하면 모든 고유값(Eigenvalue)이 최소 'alpha' 이상이 되어 역행렬이 무조건 존재합니다.
-        num_features = classwise_cov_features.shape[1]
-        device = classwise_cov_features.device
-        identity = torch.eye(num_features, device=device).unsqueeze(0)
+#         # 3. L2 Regularization (Shrinkage) 적용
+#         # 공식: Sigma_new = (1 - alpha) * Sigma_old + alpha * Identity
+#         # 이렇게 하면 모든 고유값(Eigenvalue)이 최소 'alpha' 이상이 되어 역행렬이 무조건 존재합니다.
+#         num_features = classwise_cov_features.shape[1]
+#         device = classwise_cov_features.device
+#         identity = torch.eye(num_features, device=device).unsqueeze(0)
         
-        # 정규화된 공분산 행렬 계산
-        classwise_cov_features = (1 - alpha) * classwise_cov_features + alpha * identity
+#         # 정규화된 공분산 행렬 계산
+#         classwise_cov_features = (1 - alpha) * classwise_cov_features + alpha * identity
 
-    # 4. GMM 생성 (이제 Jitter 루프 없이도 한 번에 성공합니다)
-    try:
-        gmm = torch.distributions.MultivariateNormal(
-            loc=classwise_mean_features, 
-            covariance_matrix=classwise_cov_features
-        )
-    except Exception as e:
-        print(f"GMM Fit Failed even with Shrinkage: {e}")
-        # 만약 alpha=0.1로도 안 되면 데이터 자체(NaN 등)에 문제가 있는 것입니다.
-        raise e
+#     # 4. GMM 생성 (이제 Jitter 루프 없이도 한 번에 성공합니다)
+#     try:
+#         gmm = torch.distributions.MultivariateNormal(
+#             loc=classwise_mean_features, 
+#             covariance_matrix=classwise_cov_features
+#         )
+#     except Exception as e:
+#         print(f"GMM Fit Failed even with Shrinkage: {e}")
+#         # 만약 alpha=0.1로도 안 되면 데이터 자체(NaN 등)에 문제가 있는 것입니다.
+#         raise e
 
-    # jitter_eps는 alpha로 대체하여 반환하거나 0으로 둠
-    return gmm, alpha
+#     # jitter_eps는 alpha로 대체하여 반환하거나 0으로 둠
+#     return gmm, alpha

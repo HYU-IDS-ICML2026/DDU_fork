@@ -8,7 +8,7 @@ from tqdm import tqdm
 # =============================================================================
 # [설정 영역] 사용자 정의 변수
 # =============================================================================
-MODEL_DIR = "./models/asdf"   # 모델 파일 경로
+MODEL_DIR = "./models/cifar10"   # 모델 파일 경로
 MODEL_ARCH = "wide_resnet"        # wide_resnet, resnet50, vgg16
 
 # 모델 하이퍼파라미터 (파일 이름 파싱 X, 직접 지정)
@@ -17,8 +17,8 @@ USE_MOD = True
 COEFF = 3.0
 
 # 데이터셋 설정
-ID_DATASET = "cifar100"
-NEAR_OOD_LIST = ["cifar10", "tiny_imagenet"]
+ID_DATASET = "cifar10"
+NEAR_OOD_LIST = ["cifar100", "tiny_imagenet"]
 FAR_OOD_LIST = ["mnist", "svhn"]
 
 BATCH_SIZE = 128
@@ -184,20 +184,27 @@ def main():
                 feats, _ = get_embeddings(net, loader, feat_dim, torch.double, DEVICE, torch.device('cpu'))
                 feats = feats.to(DEVICE) # 계산할 땐 GPU로
                 
-                # Logits (Log Probabilities) 계산
-                # logits shape: [N_samples, N_classes]
+                # Logits 계산 (log pi_c + l_c(z))
                 logits = gmm_get_logits(gmm, feats)  # [N, C]
 
-                # top-2 log-likelihood gap 계산
-                top2_vals, _ = torch.topk(logits, k=2, dim=1)
-                likelihood_gap = (top2_vals[:, 0] - top2_vals[:, 1]).detach().cpu().numpy()
+                logits = logits / (feat_dim**0.5)
 
-                for idx, gap in enumerate(likelihood_gap):
+                # 1. Term A: c_max(...) -> 가장 높은 클래스의 로짓값
+                max_logits, _ = torch.max(logits, dim=1) 
+                
+                # 2. Term B: log ∑ exp(...) -> 전체 에비던스(정규화 상수)
+                log_sum_exp = torch.logsumexp(logits, dim=1)
+                
+                # 3. 최종 스코어 계산
+                # (이 값은 0 이하의 음수이며, 0에 가까울수록 ID일 확률이 높음)
+                scores = (max_logits - log_sum_exp).detach().cpu().numpy()
+
+                for idx, score in enumerate(scores):
                     model_results.append({
                         "TrainDataset": ID_DATASET,
                         "OODDataset": ds_name,
                         "DataIndex": idx,
-                        "LikelihoodGap": gap
+                        "LikelihoodGap": score  # 컬럼명은 호환성을 위해 유지 (실제값은 LogPosterior)
                     })
                 
                 del feats, logits
