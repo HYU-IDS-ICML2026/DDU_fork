@@ -13,7 +13,7 @@ model_paths.sort()
 
 for model in model_paths:
     for ood in OOD_LIST:
-        command = f"python evaluate_v2.py \
+        command = f"python evaluate_DDU.py \
                     --checkpoint_path {model} \
                     --dataset cifar10 \
                     --ood_dataset {ood} \

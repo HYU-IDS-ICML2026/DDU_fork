@@ -3,7 +3,7 @@ Script to evaluate a single model with explicit path definition.
 Verified fixes:
 1. Removed DataParallel (Fixes feature extraction).
 2. Corrected Score Signs (Energy, Mahalanobis, kNN).
-3. Added DDU (GMM) Evaluation (Identical logic to evaluate.py).
+3. Added DDU (GMM) Evaluation (Fixes CUDA misaligned address by using pre-extracted double features).
 4. Added NumpyEncoder for JSON serialization.
 5. Includes SN Hook Metadata Patch.
 """
@@ -51,8 +51,8 @@ from metrics.uncertainty_confidence import entropy, logsumexp, confidence
 from metrics.ood_metrics import get_roc_auc
 
 from utils.geometry import get_geometry_stats
-# [수정] gmm_evaluate 추가 (evaluate.py와 동일한 함수 사용)
-from utils.gmm_utils import get_embeddings, gmm_fit, gmm_get_logits, gmm_evaluate
+# [수정] gmm_evaluate 대신 gmm_get_logits 사용 (이미 추출된 double feature 활용)
+from utils.gmm_utils import get_embeddings, gmm_fit, gmm_get_logits
 from utils.ood_scores import get_energy_score, MahalanobisScorer, KNNScorer
 from utils.temperature_scaling import ModelWithTemperature
 
@@ -103,6 +103,7 @@ def get_args():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--output_dir", type=str, default=".", help="Save directory")
+    parser.add_argument("--data-aug", action="store_true", help="Enable data augmentation for GMM fitting")
     return parser.parse_args()
 
 def compute_auroc(id_scores, ood_scores):
@@ -131,7 +132,7 @@ def main():
     test_loader = dataset_loader[args.dataset].get_test_loader(batch_size=args.batch_size, pin_memory=cuda)
     
     train_loader, val_loader = dataset_loader[args.dataset].get_train_valid_loader(
-        batch_size=args.batch_size, augment=args.data_aug, val_seed=args.seed, val_size=0.1, pin_memory=cuda
+        batch_size=args.batch_size, augment=True, val_seed=args.seed, val_size=0.1, pin_memory=cuda
     )
 
     if args.ood_dataset in ["mnist", "tiny_imagenet"]:
@@ -163,32 +164,40 @@ def main():
     net.to(device)
     net.eval()
 
-    # 4. Standard Metrics
-    print("\n--- Standard Metrics ---")
-    (conf_matrix, accuracy, labels_list, predictions, confidences) = test_classification_net(net, test_loader, device)
-    ece = expected_calibration_error(confidences, predictions, labels_list, num_bins=15)
-    print(f"Accuracy: {accuracy:.4f}, ECE: {ece:.4f}")
+    # 4. Standard Metrics (주석 처리)
+    # print("\n--- Standard Metrics ---")
+    # (conf_matrix, accuracy, labels_list, predictions, confidences) = test_classification_net(net, test_loader, device)
+    # ece = expected_calibration_error(confidences, predictions, labels_list, num_bins=15)
+    # print(f"Accuracy: {accuracy:.4f}, ECE: {ece:.4f}")
+    
+    # [Dummy Values for Saving]
+    accuracy = 0.0
+    ece = 0.0
 
-    # Temperature Scaling
-    t_model = ModelWithTemperature(net)
-    t_model.set_temperature(val_loader)
-    (t_conf_matrix, t_accuracy, t_labels_list, t_predictions, t_confidences) = test_classification_net(t_model, test_loader, device)
-    t_ece = expected_calibration_error(t_confidences, t_predictions, t_labels_list, num_bins=15)
-    print(f"Scaled ECE: {t_ece:.4f} (Optimal Temp: {t_model.temperature:.4f})")
+    # Temperature Scaling (주석 처리)
+    # t_model = ModelWithTemperature(net)
+    # t_model.set_temperature(val_loader)
+    # (t_conf_matrix, t_accuracy, t_labels_list, t_predictions, t_confidences) = test_classification_net(t_model, test_loader, device)
+    # t_ece = expected_calibration_error(t_confidences, t_predictions, t_labels_list, num_bins=15)
+    # print(f"Scaled ECE: {t_ece:.4f} (Optimal Temp: {t_model.temperature:.4f})")
+    
+    # [Dummy Values for Saving]
+    t_ece = 0.0
 
     # 5. Extract Features for OOD
-    # [수정] evaluate.py와 동일하게 'Double Precision(float64)' 및 'GPU Storage' 사용
-    # GMM 피팅 시 Singular Matrix 문제를 피하기 위해 필수적임.
+    # [유지] DDU를 위해 Feature는 반드시 필요함 (Double Precision, GPU 사용)
     print("\n--- Extracting Features (Double Precision, GPU) ---")
     dim = model_to_num_dim[args.model]
     
     # storage_device=device로 설정하여 GPU 메모리에 유지 (evaluate.py 방식)
     train_feats, train_lbls = get_embeddings(net, train_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=device)
+    # GMM Evaluate 대신 이미 추출된 Double Tensor를 직접 사용하여 CUDA Misaligned Address 에러를 방지합니다.
     test_feats, _ = get_embeddings(net, test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=device)
     ood_feats, _ = get_embeddings(net, ood_test_loader, num_dim=dim, dtype=torch.double, device=device, storage_device=device)
     
-    test_logits, _ = get_logits_labels(net, test_loader, device)
-    ood_logits, _ = get_logits_labels(net, ood_test_loader, device)
+    # [주석 처리] Logits는 DDU에 불필요
+    # test_logits, _ = get_logits_labels(net, test_loader, device)
+    # ood_logits, _ = get_logits_labels(net, ood_test_loader, device)
 
     results = {
         "accuracy": accuracy,
@@ -198,40 +207,39 @@ def main():
     }
 
     # 6. Compute OOD Scores
-    print("\n--- Computing OOD Scores ---")
+    print("\n--- Computing OOD Scores (DDU Only) ---")
     
-    # (1) MSP
-    (_, _, _), (_, _, _), msp_auc, _ = get_roc_auc(net, test_loader, ood_test_loader, confidence, device, confidence=True)
-    results["metrics"]["msp_auroc"] = msp_auc
-    print(f"MSP AUROC: {msp_auc:.4f}")
+    # (1) MSP (주석)
+    # (_, _, _), (_, _, _), msp_auc, _ = get_roc_auc(net, test_loader, ood_test_loader, confidence, device, confidence=True)
+    # results["metrics"]["msp_auroc"] = msp_auc
+    # print(f"MSP AUROC: {msp_auc:.4f}")
 
-    # (2) Entropy
-    (_, _, _), (_, _, _), ent_auc, _ = get_roc_auc(net, test_loader, ood_test_loader, entropy, device)
-    results["metrics"]["entropy_auroc"] = ent_auc
-    print(f"Entropy AUROC: {ent_auc:.4f}")
+    # (2) Entropy (주석)
+    # (_, _, _), (_, _, _), ent_auc, _ = get_roc_auc(net, test_loader, ood_test_loader, entropy, device)
+    # results["metrics"]["entropy_auroc"] = ent_auc
+    # print(f"Entropy AUROC: {ent_auc:.4f}")
 
-    # (3) Energy Score
-    id_energy = get_energy_score(test_logits, T=1.0)
-    ood_energy = get_energy_score(ood_logits, T=1.0)
-    energy_auc = compute_auroc(id_energy.cpu().numpy(), ood_energy.cpu().numpy())
-    results["metrics"]["energy_auroc"] = energy_auc
-    print(f"Energy AUROC: {energy_auc:.4f} (T=1.0)")
+    # (3) Energy Score (주석)
+    # id_energy = get_energy_score(test_logits, T=1.0)
+    # ood_energy = get_energy_score(ood_logits, T=1.0)
+    # energy_auc = compute_auroc(id_energy.cpu().numpy(), ood_energy.cpu().numpy())
+    # results["metrics"]["energy_auroc"] = energy_auc
+    # print(f"Energy AUROC: {energy_auc:.4f} (T=1.0)")
 
-    # (4) DDU (GMM)
-    # [수정] evaluate.py와 완전히 동일한 로직 적용
+    # (4) DDU (GMM) [활성화 및 수정됨]
     print("Fitting GMM (DDU)...")
     
     try:
         # 1. GMM Fitting (GPU + Double)
         gmm_model, _ = gmm_fit(train_feats, train_lbls, num_classes)
         
-        # 2. Evaluate using gmm_evaluate (evaluate.py 방식)
-        # 로더를 통해 배치 단위로 계산하여 logits 획득
-        ddu_id_logits, _ = gmm_evaluate(net, gmm_model, test_loader, device, num_classes, device)
-        ddu_ood_logits, _ = gmm_evaluate(net, gmm_model, ood_test_loader, device, num_classes, device)
+        # 2. Evaluate using PRE-EXTRACTED DOUBLE FEATURES (gmm_get_logits)
+        # 중요: gmm_evaluate를 쓰면 net(data)가 float32를 반환하여 double GMM과 충돌(CUDA Error)이 발생합니다.
+        # 따라서 이미 위에서 double로 추출해둔 feats를 직접 넣어주어야 합니다.
+        ddu_id_logits = gmm_get_logits(gmm_model, test_feats)
+        ddu_ood_logits = gmm_get_logits(gmm_model, ood_feats)
         
         # 3. LogSumExp & AUROC
-        # evaluate.py의 get_roc_auc_logits 내부 로직과 동일
         ddu_id_score = logsumexp(ddu_id_logits)
         ddu_ood_score = logsumexp(ddu_ood_logits)
         
@@ -244,34 +252,32 @@ def main():
         print(f"Error computing DDU: {e}")
         results["metrics"]["ddu_auroc"] = 0.0
 
-    # (5) Mahalanobis
-    # Mahalanobis/kNN에도 Double Precision Feature를 그대로 사용 (정밀도 이점)
-    # 필요시 .float()로 변환하여 사용 가능하나, 여기선 그대로 진행
-    maha = MahalanobisScorer()
-    maha.fit(train_feats, train_lbls, num_classes)
-    maha_id = maha.score(test_feats)
-    maha_ood = maha.score(ood_feats)
-    maha_auc = compute_auroc(maha_id.cpu().numpy(), maha_ood.cpu().numpy())
-    results["metrics"]["maha_auroc"] = maha_auc
-    print(f"Mahalanobis AUROC: {maha_auc:.4f}")
+    # (5) Mahalanobis (주석)
+    # maha = MahalanobisScorer()
+    # maha.fit(train_feats, train_lbls, num_classes)
+    # maha_id = maha.score(test_feats)
+    # maha_ood = maha.score(ood_feats)
+    # maha_auc = compute_auroc(maha_id.cpu().numpy(), maha_ood.cpu().numpy())
+    # results["metrics"]["maha_auroc"] = maha_auc
+    # print(f"Mahalanobis AUROC: {maha_auc:.4f}")
 
-    # (6) kNN
-    knn = KNNScorer(k=50)
-    knn.fit(train_feats)
-    knn_id = knn.score(test_feats)
-    knn_ood = knn.score(ood_feats)
-    knn_auc = compute_auroc(knn_id.cpu().numpy(), knn_ood.cpu().numpy())
-    results["metrics"]["knn_auroc"] = knn_auc
-    print(f"kNN AUROC: {knn_auc:.4f}")
+    # (6) kNN (주석)
+    # knn = KNNScorer(k=50)
+    # knn.fit(train_feats)
+    # knn_id = knn.score(test_feats)
+    # knn_ood = knn.score(ood_feats)
+    # knn_auc = compute_auroc(knn_id.cpu().numpy(), knn_ood.cpu().numpy())
+    # results["metrics"]["knn_auroc"] = knn_auc
+    # print(f"kNN AUROC: {knn_auc:.4f}")
 
-    # 7. Geometry Analysis
-    print("\n--- Analyzing Geometry ---")
-    try:
-        geo_stats = get_geometry_stats(net, train_loader, device, num_classes)
-        results["geometry"] = geo_stats
-        print(geo_stats)
-    except Exception as e:
-        print(f"Error computing geometry stats: {e}")
+    # 7. Geometry Analysis (주석)
+    # print("\n--- Analyzing Geometry ---")
+    # try:
+    #     geo_stats = get_geometry_stats(net, train_loader, device, num_classes)
+    #     results["geometry"] = geo_stats
+    #     print(geo_stats)
+    # except Exception as e:
+    #     print(f"Error computing geometry stats: {e}")
 
     # 8. Save
     ckpt_name = os.path.basename(args.checkpoint_path)

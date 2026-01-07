@@ -82,87 +82,87 @@ def gmm_get_logits(gmm, embeddings):
     return log_probs_B_Y
 
 
-def gmm_fit(embeddings, labels, num_classes):
-    with torch.no_grad():
-        classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
-        classwise_cov_features = torch.stack(
-            [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
-        )
-
-    with torch.no_grad():
-        for jitter_eps in JITTERS:
-            try:
-                jitter = jitter_eps * torch.eye(
-                     classwise_cov_features.shape[1], device=classwise_cov_features.device, dtype=classwise_cov_features.dtype
-                 ).unsqueeze(0)
-                gmm = torch.distributions.MultivariateNormal(
-                    loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter)
-                )
-            except RuntimeError as e:
-                if "cholesky" in str(e):
-                    continue
-            except ValueError as e:
-                if "The parameter covariance_matrix has invalid values" in str(e):
-                    continue
-            break
-
-    return gmm, jitter_eps
-
-
-
-
 # def gmm_fit(embeddings, labels, num_classes):
-#     """
-#     논문 재현을 위해 Full Covariance + Jitter Loop 방식을 사용합니다.
-#     코드 구조상 발생하던 UnboundLocalError를 수정하고, NaN 발생 여부를 체크합니다.
-#     """
-#     # [진단] 데이터에 NaN이나 Inf가 있는지 먼저 확인 (피팅 실패의 주 원인)
-#     if torch.isnan(embeddings).any():
-#         raise ValueError("CRITICAL: Embeddings contain NaN values. Training diverged or data corrupted.")
-#     if torch.isinf(embeddings).any():
-#         raise ValueError("CRITICAL: Embeddings contain Inf values. Numerical overflow.")
-
 #     with torch.no_grad():
 #         classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
 #         classwise_cov_features = torch.stack(
 #             [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
 #         )
 
-#     gmm = None  # [수정] 변수 초기화 (에러 방지)
-#     final_jitter = 0
-
 #     with torch.no_grad():
 #         for jitter_eps in JITTERS:
 #             try:
 #                 jitter = jitter_eps * torch.eye(
-#                     classwise_cov_features.shape[1], device=classwise_cov_features.device, dtype=classwise_cov_features.dtype
-#                 ).unsqueeze(0)
-                
+#                      classwise_cov_features.shape[1], device=classwise_cov_features.device
+#                  ).unsqueeze(0)
 #                 gmm = torch.distributions.MultivariateNormal(
-#                     loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
+#                     loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter)
 #                 )
-#                 final_jitter = jitter_eps
-#                 break # 성공하면 루프 탈출
 #             except RuntimeError as e:
 #                 if "cholesky" in str(e).lower():
 #                     continue
-#                 else:
-#                     raise e # Cholesky 외의 다른 에러는 출력
 #             except ValueError as e:
-#                 if "invalid values" in str(e).lower() or "singular" in str(e).lower():
+#                 if "The parameter covariance_matrix has invalid values" in str(e):
 #                     continue
-#                 else:
-#                     raise e
+#             break
 
-#     # [수정] 모든 Jitter가 실패했을 경우 명확한 에러 메시지 출력
-#     if gmm is None:
-#         raise RuntimeError(
-#             f"GMM fitting failed for ALL jitters (Max: {JITTERS[-1]}). "
-#             "Even with Double Precision + GPU, the covariance matrix is degenerate. "
-#             "Check if 'num_classes' matches the data or if embeddings contain NaNs."
-#         )
+#     return gmm, jitter_eps
 
-#     return gmm, final_jitter
+
+
+
+def gmm_fit(embeddings, labels, num_classes):
+    """
+    논문 재현을 위해 Full Covariance + Jitter Loop 방식을 사용합니다.
+    코드 구조상 발생하던 UnboundLocalError를 수정하고, NaN 발생 여부를 체크합니다.
+    """
+    # [진단] 데이터에 NaN이나 Inf가 있는지 먼저 확인 (피팅 실패의 주 원인)
+    if torch.isnan(embeddings).any():
+        raise ValueError("CRITICAL: Embeddings contain NaN values. Training diverged or data corrupted.")
+    if torch.isinf(embeddings).any():
+        raise ValueError("CRITICAL: Embeddings contain Inf values. Numerical overflow.")
+
+    with torch.no_grad():
+        classwise_mean_features = torch.stack([torch.mean(embeddings[labels == c], dim=0) for c in range(num_classes)])
+        classwise_cov_features = torch.stack(
+            [centered_cov_torch(embeddings[labels == c] - classwise_mean_features[c]) for c in range(num_classes)]
+        )
+
+    gmm = None  # [수정] 변수 초기화 (에러 방지)
+    final_jitter = 0
+
+    with torch.no_grad():
+        for jitter_eps in JITTERS:
+            try:
+                jitter = jitter_eps * torch.eye(
+                    classwise_cov_features.shape[1], device=classwise_cov_features.device, dtype=classwise_cov_features.dtype
+                ).unsqueeze(0)
+                
+                gmm = torch.distributions.MultivariateNormal(
+                    loc=classwise_mean_features, covariance_matrix=(classwise_cov_features + jitter),
+                )
+                final_jitter = jitter_eps
+                break # 성공하면 루프 탈출
+            except RuntimeError as e:
+                if "cholesky" in str(e).lower():
+                    continue
+                else:
+                    raise e # Cholesky 외의 다른 에러는 출력
+            except ValueError as e:
+                if "invalid values" in str(e).lower() or "singular" in str(e).lower():
+                    continue
+                else:
+                    raise e
+
+    # [수정] 모든 Jitter가 실패했을 경우 명확한 에러 메시지 출력
+    if gmm is None:
+        raise RuntimeError(
+            f"GMM fitting failed for ALL jitters (Max: {JITTERS[-1]}). "
+            "Even with Double Precision + GPU, the covariance matrix is degenerate. "
+            "Check if 'num_classes' matches the data or if embeddings contain NaNs."
+        )
+
+    return gmm, final_jitter
 
 # def gmm_fit(embeddings, labels, num_classes):
 #     with torch.no_grad():

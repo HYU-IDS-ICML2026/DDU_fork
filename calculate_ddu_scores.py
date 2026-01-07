@@ -8,7 +8,7 @@ from tqdm import tqdm
 # =============================================================================
 # [설정 영역] 사용자 정의 변수
 # =============================================================================
-MODEL_DIR = "./models/cifar10"   # 모델 파일 경로
+MODEL_DIR = "./models/cifar1002"   # 모델 파일 경로
 MODEL_ARCH = "wide_resnet"        # wide_resnet, resnet50, vgg16
 
 # 모델 하이퍼파라미터 (파일 이름 파싱 X, 직접 지정)
@@ -17,8 +17,8 @@ USE_MOD = True
 COEFF = 3.0
 
 # 데이터셋 설정
-ID_DATASET = "cifar10"
-NEAR_OOD_LIST = ["cifar100", "tiny_imagenet"]
+ID_DATASET = "cifar100"
+NEAR_OOD_LIST = ["cifar10", "tiny_imagenet"]
 FAR_OOD_LIST = ["mnist", "svhn"]
 
 BATCH_SIZE = 128
@@ -155,7 +155,7 @@ def main():
         # 3.1 GMM 피팅 (ID Train Features)
         try:
             # evaluate_v2.py에서는 device=device, storage_device='cpu'로 메모리 절약
-            embeddings, labels = get_embeddings(net, train_loader, feat_dim, torch.double, DEVICE, torch.device('cpu'))
+            embeddings, labels = get_embeddings(net, train_loader, feat_dim, torch.double, DEVICE, torch.device(DEVICE))
             
             # Embeddings를 GPU로 옮겨서 피팅 (속도 향상)
             embeddings = embeddings.to(DEVICE)
@@ -187,7 +187,7 @@ def main():
                 # Logits 계산 (log pi_c + l_c(z))
                 logits = gmm_get_logits(gmm, feats)  # [N, C]
 
-                logits = logits / (feat_dim**0.5)
+                logits = logits / feat_dim
 
                 # 1. Term A: c_max(...) -> 가장 높은 클래스의 로짓값
                 max_logits, _ = torch.max(logits, dim=1) 
