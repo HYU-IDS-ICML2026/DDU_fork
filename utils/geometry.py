@@ -47,7 +47,7 @@ def get_geometry_stats(model, loader, device, num_classes):
     """
     model.eval()
     model.to(device)
-    dtype = torch.float64  # 정밀도를 위해 float64 사용
+    dtype = torch.float32  # 정밀도를 위해 float64 사용
 
     # 1. Feature Extraction (Main Branch Style)
     features_list = []

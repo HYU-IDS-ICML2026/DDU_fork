@@ -131,7 +131,7 @@ def main():
     test_loader = dataset_loader[args.dataset].get_test_loader(batch_size=args.batch_size, pin_memory=cuda)
     
     train_loader, val_loader = dataset_loader[args.dataset].get_train_valid_loader(
-        batch_size=args.batch_size, augment=args.data_aug, val_seed=args.seed, val_size=0.1, pin_memory=cuda
+        batch_size=args.batch_size, augment=False, val_seed=args.seed, val_size=0.1, pin_memory=cuda
     )
 
     if args.ood_dataset in ["mnist", "tiny_imagenet"]:
