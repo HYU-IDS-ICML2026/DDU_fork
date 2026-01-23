@@ -187,13 +187,20 @@ def get_features_and_metrics(net, gmm, loader, device):
             probs = F.softmax(logits, dim=1)
             entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=1)
             
-            # Log-Density
+            # Log-Density (Modified to match official DDU evaluate.py)
+            # DDU 공식 구현에서는 GMM의 confidence score(m1)로 LogSumExp를 사용합니다.
+            # 이는 모든 클래스에 대한 우도의 합(marginal likelihood)을 로그 스케일로 구하는 것입니다.
             log_probs = gmm.log_prob(feats.unsqueeze(1))
-            max_log_density, _ = torch.max(log_probs, dim=1)
+            
+            # [수정 전] 최댓값 사용
+            # max_log_density, _ = torch.max(log_probs, dim=1) 
+            
+            # [수정 후] LogSumExp 사용 (evaluate.py의 m1 metric 정의 준수)
+            log_density = torch.logsumexp(log_probs, dim=1)
             
             features_list.append(feats.cpu())
             entropy_list.append(entropy.cpu())
-            density_list.append(max_log_density.cpu())
+            density_list.append(log_density.cpu())
             
     return (torch.cat(features_list).numpy(), torch.cat(entropy_list).numpy(), torch.cat(density_list).numpy())
 
