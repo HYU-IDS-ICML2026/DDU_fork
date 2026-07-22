@@ -26,6 +26,7 @@ import data.ood_detection.tiny_imagenet as tiny_imagenet
 from net.resnet import resnet50, resnet18
 from net.wide_resnet import wrn
 from net.vgg import vgg16
+from net.vit import vit_tiny_patch4_32
 import net.spectral_normalization.spectral_norm_conv_inplace as sn_lib
 
 # =============================================================================
@@ -82,11 +83,13 @@ dataset_num_classes = {
 }
 models = {
     "resnet50": resnet50, "resnet18": resnet18, 
-    "wide_resnet": wrn, "vgg16": vgg16
+    "wide_resnet": wrn, "vgg16": vgg16,
+    "vit_tiny_patch4_32": vit_tiny_patch4_32,
 }
 model_to_num_dim = {
     "resnet50": 2048, "resnet18": 512, 
-    "wide_resnet": 640, "vgg16": 512
+    "wide_resnet": 640, "vgg16": 512,
+    "vit_tiny_patch4_32": 192,
 }
 
 def get_args():
@@ -242,7 +245,8 @@ def main():
         print(f"DDU (GMM) AUROC: {ddu_auc:.4f}")
     except Exception as e:
         print(f"Error computing DDU: {e}")
-        results["metrics"]["ddu_auroc"] = 0.0
+        results["metrics"]["ddu_auroc"] = None
+        results["metrics"]["ddu_error"] = str(e)
 
     # (5) Mahalanobis
     # Mahalanobis/kNN에도 Double Precision Feature를 그대로 사용 (정밀도 이점)
@@ -272,6 +276,8 @@ def main():
         print(geo_stats)
     except Exception as e:
         print(f"Error computing geometry stats: {e}")
+        results["geometry"] = None
+        results["geometry_error"] = str(e)
 
     # 8. Save
     ckpt_name = os.path.basename(args.checkpoint_path)

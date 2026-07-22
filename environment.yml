@@ -16,3 +16,6 @@ dependencies:
   - matplotlib
   - seaborn
   - scikit-learn
+  - pip
+  - pip:
+      - timm==1.0.27

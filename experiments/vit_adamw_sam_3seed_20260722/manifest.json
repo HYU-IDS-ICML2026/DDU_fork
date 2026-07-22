@@ -1,0 +1,38 @@
+{
+  "experiment": "vit_adamw_sam_3seed_20260722",
+  "repository": "/home/ghjin/DDU_fork",
+  "visible_gpu": "0",
+  "execution": "sequential",
+  "common_args": {
+    "dataset": "cifar10",
+    "model": "vit_tiny_patch4_32",
+    "epochs": 200,
+    "batch_size": 64,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.0005,
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "adam_eps": 1e-08,
+    "label_smoothing": 0.1,
+    "scheduler": "cosine",
+    "data_aug": true,
+    "autoaugment": true,
+    "pretrained": false,
+    "spectral_normalization": false,
+    "architectural_modification": false,
+    "temperature": 1.0,
+    "save_interval": 50,
+    "log_interval": 100
+  },
+  "runs": [
+    {"run_id": "adamw_seed0", "optimizer": "adamw", "rho": 0.0, "seed": 0},
+    {"run_id": "sam_adamw_rho0.05_seed0", "optimizer": "sam_adamw", "rho": 0.05, "seed": 0},
+    {"run_id": "sam_adamw_rho0.5_seed0", "optimizer": "sam_adamw", "rho": 0.5, "seed": 0},
+    {"run_id": "adamw_seed1", "optimizer": "adamw", "rho": 0.0, "seed": 1},
+    {"run_id": "sam_adamw_rho0.05_seed1", "optimizer": "sam_adamw", "rho": 0.05, "seed": 1},
+    {"run_id": "sam_adamw_rho0.5_seed1", "optimizer": "sam_adamw", "rho": 0.5, "seed": 1},
+    {"run_id": "adamw_seed2", "optimizer": "adamw", "rho": 0.0, "seed": 2},
+    {"run_id": "sam_adamw_rho0.05_seed2", "optimizer": "sam_adamw", "rho": 0.05, "seed": 2},
+    {"run_id": "sam_adamw_rho0.5_seed2", "optimizer": "sam_adamw", "rho": 0.5, "seed": 2}
+  ]
+}

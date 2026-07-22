@@ -1,294 +1,200 @@
-> **Note:** This repository is a fork of the [official DDU implementation](https://github.com/omegafragger/DDU) for research purposes.
->
-> **Major Modifications:**
-> - Added **Sharpness-Aware Minimization (SAM)** optimizer (`--opt sam`).
-> - Included `rho` parameter argument for SAM configuration.
-> - Updated environment compatibility for recent PyTorch versions.
+# CIFAR-10 ViT: AdamW와 SAM(AdamW) 비교 실험
 
----
+이 브랜치는 [DDU(Deep Deterministic Uncertainty)](https://arxiv.org/abs/2102.11582) 코드베이스에 CIFAR-10용 Vision Transformer와 SAM 학습 경로를 연결한 연구용 구현입니다. 현재 핵심 실험은 동일한 ViT와 학습 설정을 유지하면서 아래 세 조건을 비교하는 것입니다.
 
-# Deep Deterministic Uncertainty
+- AdamW
+- SAM(base optimizer=AdamW), `rho=0.05`
+- SAM(base optimizer=AdamW), `rho=0.5`
 
-[![arXiv](https://img.shields.io/badge/stat.ML-arXiv%3A2006.08437-B31B1B.svg)](https://arxiv.org/abs/2102.11582)
-[![Pytorch 1.8.1](https://img.shields.io/badge/pytorch-1.8.1-blue.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/omegafragger/DDU/blob/main/LICENSE)
+각 조건을 seed `0`, `1`, `2`로 학습하며, 최종 평가는 세 seed의 평균과 표준편차로 보고하는 것을 전제로 합니다. 모델은 pretrained weight 없이 CIFAR-10에서 처음부터 학습합니다.
 
-This repository contains the code for [*Deterministic Neural Networks with Appropriate Inductive Biases Capture Epistemic and Aleatoric Uncertainty*](https://arxiv.org/abs/2102.11582).
+## 1. 모델: `vit_tiny_patch4_32`
 
-If the code or the paper has been useful in your research, please add a citation to our work:
+구현 파일은 [`net/vit.py`](net/vit.py)입니다. `timm.models.vision_transformer.VisionTransformer`를 얇게 감싸며, `timm` 소스를 저장소에 복사하지 않습니다.
 
-```
-@article{mukhoti2021deterministic,
-  title={Deterministic Neural Networks with Appropriate Inductive Biases Capture Epistemic and Aleatoric Uncertainty},
-  author={Mukhoti, Jishnu and Kirsch, Andreas and van Amersfoort, Joost and Torr, Philip HS and Gal, Yarin},
-  journal={arXiv preprint arXiv:2102.11582},
-  year={2021}
-}
-```
+| 항목 | 설정 |
+|---|---:|
+| 입력 | RGB `32 x 32` |
+| patch 크기 | `4 x 4` |
+| patch token 수 | `8 x 8 = 64` |
+| class token | 사용 |
+| embedding 차원 | `192` |
+| Transformer depth | `12` |
+| attention heads | `3` |
+| MLP ratio | `4.0` |
+| dropout / stochastic depth | `0.0` |
+| classifier 출력 | CIFAR-10의 10 classes |
+| pretrained | 사용하지 않음 |
 
-## Dependencies
+`ViT-Tiny/4`라는 표현에서 `Tiny`는 `embed_dim=192`, `depth=12`, `num_heads=3`인 작은 ViT 구성을, `/4`는 한 patch의 한 변이 4 pixel임을 뜻합니다. CIFAR-10처럼 32x32인 작은 영상에 ImageNet에서 흔히 사용하는 16x16 patch를 적용하면 token이 4개뿐이므로, 여기서는 4x4 patch로 공간 정보를 더 세밀하게 유지합니다.
 
-The code is based on PyTorch and requires a few further dependencies, listed in [environment.yml](environment.yml). It should work with newer versions as well.
+DDU 평가 코드와 호환되도록 wrapper는 다음 인터페이스를 제공합니다.
 
+- `net.feature`: classifier 직전의 최종 LayerNorm 이후 CLS representation, shape `[batch, 192]`
+- `net.fc`: `Linear(192, 10)` classifier
+- `net.feature_dim`: `192`
+- logits: `net.fc(feature) / temperature`
 
-## OoD Detection
+현재 이 ViT wrapper는 spectral normalization(`-sn`), CNN 구조 변경(`-mod`), MNIST 입력을 지원하지 않으며 해당 옵션을 사용하면 명시적으로 실패합니다.
 
-### Datasets
+## 2. 학습 설정
 
-For OoD detection, you can train on [*CIFAR-10/100*](https://www.cs.toronto.edu/~kriz/cifar.html). You can also train on [*Dirty-MNIST*](https://blackhc.github.io/ddu_dirty_mnist/) by downloading *Ambiguous-MNIST* (```amnist_labels.pt``` and ```amnist_samples.pt```) from [here](https://github.com/BlackHC/ddu_dirty_mnist/releases/tag/data-v0.6.0) and using the following training instructions.
+현재 9-run 비교 실험의 공통 설정은 다음과 같습니다.
 
-### Training
+| 항목 | 값 |
+|---|---:|
+| dataset split | CIFAR-10 train 45,000 / validation 5,000 |
+| epochs | `200` |
+| batch size | `64` |
+| learning rate | `1e-4` |
+| weight decay | `5e-4` |
+| Adam betas | `(0.9, 0.999)` |
+| Adam epsilon | `1e-8` |
+| label smoothing | `0.1` |
+| scheduler | cosine annealing |
+| augmentation | RandomCrop + HorizontalFlip + CIFAR-10 AutoAugment |
+| temperature | `1.0` |
+| checkpoint interval | 50 epochs |
 
-In order to train a model for the OoD detection task, use the [train.py](train.py) script. Following are the main parameters for training:
-```
---seed: seed for initialization
---dataset: dataset used for training (cifar10/cifar100/dirty_mnist)
---dataset-root: /path/to/amnist_labels.pt and amnist_samples.pt/ (if training on dirty-mnist)
---model: model to train (wide_resnet/vgg16/resnet18/resnet50/lenet)
--sn: whether to use spectral normalization (available for wide_resnet, vgg16 and resnets)
---coeff: Coefficient for spectral normalization
--mod: whether to use architectural modifications (leaky ReLU + average pooling in skip connections)
---save-path: path/for/saving/model/
-```
+AdamW와 SAM(AdamW)은 동일한 parameter list, learning rate, betas, epsilon, weight decay를 사용합니다. 유일한 optimizer 차이는 SAM이 각 minibatch에서 다음 두 단계를 수행한다는 점입니다.
 
-As an example, in order to train a Wide-ResNet-28-10 with spectral normalization and architectural modifications on CIFAR-10, use the following:
-```
-python train.py \
-       --seed 1 \
-       --dataset cifar10 \
-       --model wide_resnet \
-       -sn -mod \
-       --coeff 3.0 
-```
-Similarly, to train a ResNet-18 with spectral normalization on Dirty-MNIST, use:
-```
-python train.py \
-       --seed 1 \
-       --dataset dirty-mnist \
-       --dataset-root /home/user/amnist/ \
-       --model resnet18 \
-       -sn \
-       --coeff 3.0
-```
+1. 원래 parameter에서 gradient를 계산하고 반경 `rho`의 perturbation을 적용합니다.
+2. perturbation된 parameter에서 다시 gradient를 계산한 뒤 원래 parameter로 복원하고 AdamW update를 수행합니다.
 
-### Evaluation
+학습 로그의 loss와 accuracy는 두 조건을 공정하게 비교할 수 있도록 첫 번째, 즉 perturbation 전 forward에서 기록합니다.
 
-To evaluate trained models, use [evaluate.py](evaluate.py). This script can evaluate and aggregate results over multiple experimental runs. For example, if the pretrained models are stored in a directory path ```/home/user/models```, store them using the following directory structure:
-```
-models
-├── Run1
-│   └── wide_resnet_1_350.model
-├── Run2
-│   └── wide_resnet_2_350.model
-├── Run3
-│   └── wide_resnet_3_350.model
-├── Run4
-│   └── wide_resnet_4_350.model
-└── Run5
-    └── wide_resnet_5_350.model
-```
-For an ensemble of models, store the models using the following directory structure:
-```
-model_ensemble
-├── Run1
-│   ├── wide_resnet_1_350.model
-│   ├── wide_resnet_2_350.model
-│   ├── wide_resnet_3_350.model
-│   ├── wide_resnet_4_350.model
-│   └── wide_resnet_5_350.model
-├── Run2
-│   ├── wide_resnet_10_350.model
-│   ├── wide_resnet_6_350.model
-│   ├── wide_resnet_7_350.model
-│   ├── wide_resnet_8_350.model
-│   └── wide_resnet_9_350.model
-├── Run3
-│   ├── wide_resnet_11_350.model
-│   ├── wide_resnet_12_350.model
-│   ├── wide_resnet_13_350.model
-│   ├── wide_resnet_14_350.model
-│   └── wide_resnet_15_350.model
-├── Run4
-│   ├── wide_resnet_16_350.model
-│   ├── wide_resnet_17_350.model
-│   ├── wide_resnet_18_350.model
-│   ├── wide_resnet_19_350.model
-│   └── wide_resnet_20_350.model
-└── Run5
-    ├── wide_resnet_21_350.model
-    ├── wide_resnet_22_350.model
-    ├── wide_resnet_23_350.model
-    ├── wide_resnet_24_350.model
-    └── wide_resnet_25_350.model
-```
-Following are the main parameters for evaluation:
-```
---seed: seed used for initializing the first trained model
---dataset: dataset used for training (cifar10/cifar100)
---ood_dataset: OoD dataset to compute AUROC
---load-path: /path/to/pretrained/models/
---model: model architecture to load (wide_resnet/vgg16)
---runs: number of experimental runs
--sn: whether the model was trained using spectral normalization
---coeff: Coefficient for spectral normalization
--mod: whether the model was trained using architectural modifications
---ensemble: number of models in the ensemble
---model-type: type of model to load for evaluation (softmax/ensemble/gmm)
-```
-As an example, in order to evaluate a Wide-ResNet-28-10 with spectral normalization and architectural modifications on CIFAR-10 with OoD dataset as SVHN, use the following:
-```
-python evaluate.py \
-       --seed 1 \
-       --dataset cifar10 \
-       --ood_dataset svhn \
-       --load-path /path/to/pretrained/models/ \
-       --model wide_resnet \
-       --runs 5 \
-       -sn -mod \
-       --coeff 3.0 \
-       --model-type softmax
-```
-Similarly, to evaluate the above model using feature density, set ```--model-type gmm```. The evaluation script assumes that the seeds of models trained in consecutive runs differ by 1. The script stores the results in a json file with the following structure: 
-```
-{
-    "mean": {
-        "accuracy": mean accuracy,
-        "ece": mean ECE,
-        "m1_auroc": mean AUROC using log density / MI for ensembles,
-        "m1_auprc": mean AUPRC using log density / MI for ensembles,
-        "m2_auroc": mean AUROC using entropy / PE for ensembles,
-        "m2_auprc": mean AUPRC using entropy / PE for ensembles,
-        "t_ece": mean ECE (post temp scaling)
-        "t_m1_auroc": mean AUROC using log density / MI for ensembles (post temp scaling),
-        "t_m1_auprc": mean AUPRC using log density / MI for ensembles (post temp scaling),
-        "t_m2_auroc": mean AUROC using entropy / PE for ensembles (post temp scaling),
-        "t_m2_auprc": mean AUPRC using entropy / PE for ensembles (post temp scaling)
-    },
-    "std": {
-        "accuracy": std error accuracy,
-        "ece": std error ECE,
-        "m1_auroc": std error AUROC using log density / MI for ensembles,
-        "m1_auprc": std error AUPRC using log density / MI for ensembles,
-        "m2_auroc": std error AUROC using entropy / PE for ensembles,
-        "m2_auprc": std error AUPRC using entropy / PE for ensembles,
-        "t_ece": std error ECE (post temp scaling),
-        "t_m1_auroc": std error AUROC using log density / MI for ensembles (post temp scaling),
-        "t_m1_auprc": std error AUPRC using log density / MI for ensembles (post temp scaling),
-        "t_m2_auroc": std error AUROC using entropy / PE for ensembles (post temp scaling),
-        "t_m2_auprc": std error AUPRC using entropy / PE for ensembles (post temp scaling)
-    },
-    "values": {
-        "accuracy": accuracy list,
-        "ece": ece list,
-        "m1_auroc": AUROC list using log density / MI for ensembles,
-        "m2_auroc": AUROC list using entropy / PE for ensembles,
-        "t_ece": ece list (post temp scaling),
-        "t_m1_auroc": AUROC list using log density / MI for ensembles (post temp scaling),
-        "t_m1_auprc": AUPRC list using log density / MI for ensembles (post temp scaling),
-        "t_m2_auroc": AUROC list using entropy / PE for ensembles (post temp scaling),
-        "t_m2_auprc": AUPRC list using entropy / PE for ensembles (post temp scaling)
-    },
-    "info": {dictionary of args}
-}
+## 3. 환경 설치
+
+권장 환경은 [`environment.yml`](environment.yml)에 기록되어 있으며 `timm==1.0.27`을 고정합니다.
+
+```bash
+conda env create -f environment.yml
+conda activate environment
 ```
 
-### Results
+CIFAR-10은 첫 실행 시 `torchvision`이 `./data` 아래로 내려받습니다. 공유 서버에서는 기존 데이터가 있다면 `data/cifar-10-batches-py`가 보이도록 준비하면 됩니다.
 
-#### Dirty-MNIST
+## 4. 단일 run 실행
 
-To visualise DDU's performance on Dirty-MNIST (i.e., Fig. 1 of the paper), use [fig_1_plot.ipynb](notebooks/fig_1_plot.ipynb). The notebook requires a pretrained LeNet, VGG-16 and ResNet-18 with spectral normalization trained on Dirty-MNIST and visualises the softmax entropy and feature density for Dirty-MNIST (iD) samples vs Fashion-MNIST (OoD) samples. The notebook also visualises the softmax entropies of MNIST vs Ambiguous-MNIST samples for the ResNet-18+SN model (Fig. 2 of the paper). The following figure shows the output of the notebook for the LeNet, VGG-16 and ResNet18+SN model we trained on Dirty-MNIST.
+아래 명령에서 `<output-dir>`은 조건과 seed마다 서로 다른 디렉터리를 사용해야 합니다.
 
-<p align="center">
-  <img src="vis/dirty_mnist_vis.png" width="500" />
-</p>
+### AdamW
 
-#### CIFAR-10 vs SVHN
-
-The following table presents results for a Wide-ResNet-28-10 architecture trained on CIFAR-10 with SVHN as the OoD dataset. For the full set of results, refer to the [paper](https://arxiv.org/abs/2102.11582).
-
-| Method  | Aleatoric Uncertainty | Epistemic Uncertainty | Test Accuracy | Test ECE | AUROC |
-| ---  | --- | --- | --- | --- | --- |
-| Softmax  | Softmax Entropy | Softmax Entropy | 95.98+-0.02 | 0.85+-0.02 | 94.44+-0.43 |
-| [Energy-based](https://arxiv.org/abs/2010.03759) | Softmax Entropy | Softmax Density | 95.98+-0.02 | 0.85+-0.02 | 94.56+-0.51 |
-| [5-Ensemble](https://arxiv.org/abs/1612.01474)  | Predictive Entropy | Predictive Entropy | 96.59+-0.02 | 0.76+-0.03 | 97.73+-0.31 |
-| DDU (ours)  | Softmax Entropy | GMM Density | 95.97+-0.03 | 0.85+-0.04 | 98.09+-0.10 |
-
-
-## Active Learning
-
-To run active learning experiments, use ```active_learning_script.py```. You can run active learning experiments on both [MNIST](http://yann.lecun.com/exdb/mnist/) as well as [Dirty-MNIST](https://blackhc.github.io/ddu_dirty_mnist/). When running with Dirty-MNIST, you will need to provide a pretrained model on Dirty-MNIST to distinguish between clean MNIST and Ambiguous-MNIST samples. The following are the main command line arguments for ```active_learning_script.py```.
-```
---seed: seed used for initializing the first model (later experimental runs will have seeds incremented by 1)
---model: model architecture to train (resnet18)
--ambiguous: whether to use ambiguous MNIST during training. If this is set to True, the models will be trained on Dirty-MNIST, otherwise they will train on MNIST.
---dataset-root: /path/to/amnist_labels.pt and amnist_samples.pt/
---trained-model: model architecture of pretrained model to distinguish clean and ambiguous MNIST samples
--tsn: if pretrained model has been trained using spectral normalization
---tcoeff: coefficient of spectral normalization used on pretrained model
--tmod: if pretrained model has been trained using architectural modifications (leaky ReLU and average pooling on skip connections)
---saved-model-path: /path/to/saved/pretrained/model/
---saved-model-name: name of the saved pretrained model file
---threshold: Threshold of softmax entropy to decide if a sample is ambiguous (samples having higher softmax entropy than threshold will be considered ambiguous)
---subsample: number of clean MNIST samples to use to subsample clean MNIST
--sn: whether to use spectral normalization during training
---coeff: coefficient of spectral normalization during training
--mod: whether to use architectural modifications (leaky ReLU and average pooling on skip connections) during training
---al-type: type of active learning acquisition model (softmax/ensemble/gmm)
--mi: whether to use mutual information for ensemble al-type
---num-initial-samples: number of initial samples in the training set
---max-training-samples: maximum number of training samples
---acquisition-batch-size: batch size for each acquisition step
+```bash
+CUDA_VISIBLE_DEVICES=0 python -u train.py \
+  --seed 0 \
+  --dataset cifar10 \
+  --model vit_tiny_patch4_32 \
+  --opt adamw \
+  --rho 0.0 \
+  -e 200 -b 64 \
+  --lr 1e-4 --decay 5e-4 \
+  --beta1 0.9 --beta2 0.999 --adam-eps 1e-8 \
+  --label-smoothing 0.1 \
+  --scheduler cosine \
+  --data-aug --autoaugment \
+  --save-interval 50 --log-interval 100 \
+  --save-path <output-dir>
 ```
 
-As an example, to run the active learning experiment on MNIST using the DDU method, use:
-```
-python active_learning_script.py \
-       --seed 1 \
-       --model resnet18 \
-       -sn -mod \
-       --al-type gmm
-```
-Similarly, to run the active learning experiment on Dirty-MNIST using the DDU baseline, with a pretrained ResNet-18 with SN to distinguish clean and ambiguous MNIST samples, use the following:
-```
-python active_learning_script.py \
-       --seed 1 \
-       --model resnet18 \
-       -sn -mod \
-       -ambiguous \
-       --dataset-root /home/user/amnist/ \
-       --trained-model resnet18 \
-       -tsn \
-       --saved-model-path /path/to/pretrained/model \
-       --saved-model-name resnet18_sn_3.0_1_350.model \
-       --threshold 1.0 \
-       --subsample 1000 \
-       --al-type gmm
+### SAM(AdamW)
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -u train.py \
+  --seed 0 \
+  --dataset cifar10 \
+  --model vit_tiny_patch4_32 \
+  --opt sam_adamw \
+  --rho 0.05 \
+  -e 200 -b 64 \
+  --lr 1e-4 --decay 5e-4 \
+  --beta1 0.9 --beta2 0.999 --adam-eps 1e-8 \
+  --label-smoothing 0.1 \
+  --scheduler cosine \
+  --data-aug --autoaugment \
+  --save-interval 50 --log-interval 100 \
+  --save-path <output-dir>
 ```
 
-### Results
+`rho=0.5` 실험은 위 명령의 `--rho`만 `0.5`로 변경합니다. seed 1과 2도 `--seed`와 출력 디렉터리만 변경하며 나머지 인자는 고정합니다.
 
-The active learning script stores all results in json files. The MNIST test set accuracy is stored in a json file with the following structure:
+각 출력 디렉터리에는 다음 자료가 저장됩니다.
+
+- `training_args.json`: 프로그램이 실제로 해석한 전체 인자
+- `*.model`: checkpoint
+- `*_train_loss.json`, `*_train_accuracy.json`: epoch별 수치
+- `stats_logging/`: TensorBoard event
+
+## 5. 9-run sweep 실행
+
+재현용 정의와 실행기는 [`experiments/vit_adamw_sam_3seed_20260722`](experiments/vit_adamw_sam_3seed_20260722)에 있습니다.
+
+- `manifest.json`: 공통 설정과 9개 run의 machine-readable 정의
+- `preflight.sh`: CUDA, dependency, 모델 forward, AdamW/SAM step 검사
+- `launch.sh`: 한 GPU에서 9개 run을 순차 실행
+- `start_screen.sh`: SSH 연결이 끊겨도 실행이 유지되도록 GNU Screen session 시작
+- `monitor.sh`: 상태와 현재 로그의 마지막 40줄 출력
+
+```bash
+bash experiments/vit_adamw_sam_3seed_20260722/start_screen.sh
+bash experiments/vit_adamw_sam_3seed_20260722/monitor.sh
 ```
-{
-    "experiment run": list of MNIST test set accuracies one per acquisition step
-}
-```
-When using ambiguous samples in the pool set, the script also stores the fraction of ambiguous samples acquired in each step in the following json:
-```
-{
-    "experiment run": list of fractions of ambiguous samples in the acquired training set
-}
+
+직접 session에 들어가려면 다음을 사용합니다.
+
+```bash
+screen -r vit_adamw_sam_3seed
 ```
 
-### Visualisation
+`Ctrl-a` 다음 `d`를 누르면 학습을 종료하지 않고 다시 detach합니다. 실행기는 시작 시 학습 핵심 코드의 snapshot과 SHA-256을 기록하며, sweep 도중 코드가 바뀌면 서로 다른 구현이 한 실험에 섞이지 않도록 다음 run 시작 전에 중단합니다.
 
-To visualise results from the above json files, use the [al_plot.ipynb](notebooks/al_plot.ipynb) notebook. The following diagram shows the performance of different baselines (softmax, ensemble PE, ensemble MI and DDU) on MNIST and Dirty-MNIST.
+기본 launcher는 `CUDA_VISIBLE_DEVICES=0`을 사용합니다. 다른 GPU를 사용하려면 실행 전에 [`launch.sh`](experiments/vit_adamw_sam_3seed_20260722/launch.sh)의 GPU 번호를 명시적으로 변경하십시오.
 
-<p align="center">
-  <img src="vis/al_plots.png" width="700" />
-</p>
+## 6. 단일 checkpoint 평가
 
+`evaluate_v2.py`는 accuracy, calibration, 여러 OOD score, DDU/GMM 및 geometry 경로를 평가합니다. checkpoint에 `module.` prefix가 있어도 제거하여 읽습니다.
 
-## Questions
+```bash
+CUDA_VISIBLE_DEVICES=0 python evaluate_v2.py \
+  --checkpoint_path <checkpoint.model> \
+  --dataset cifar10 \
+  --ood_dataset svhn \
+  --model vit_tiny_patch4_32 \
+  --batch_size 128 \
+  --seed 0 \
+  --gpu \
+  --output_dir <evaluation-output-dir>
+```
 
-For any questions, please feel free to raise an issue or email us directly. Our emails can be found on the [paper](https://arxiv.org/abs/2102.11582).
+DDU 또는 geometry 계산이 실패하면 `0.0`이라는 정상 AUROC처럼 숨기지 않고 JSON에 `null`과 오류 메시지를 기록합니다. 세 seed의 평균·표준편차 집계는 평가 JSON을 모두 만든 뒤 별도 집계 단계에서 수행해야 하며, 이 브랜치에는 아직 전용 집계 스크립트를 추가하지 않았습니다.
+
+## 7. 주요 변경 파일
+
+- [`net/vit.py`](net/vit.py): CIFAR-10 ViT와 DDU feature interface
+- [`train.py`](train.py): ViT registry, AdamW/SAM(AdamW), cosine scheduler, 재현성 및 인자 기록
+- [`utils/train_utils.py`](utils/train_utils.py): SAM two-pass, label smoothing, loss/accuracy logging
+- [`utils/args.py`](utils/args.py): 새 optimizer 관련 CLI 인자
+- [`data/ood_detection/cifar10.py`](data/ood_detection/cifar10.py): optional CIFAR-10 AutoAugment
+- [`evaluate_v2.py`](evaluate_v2.py), [`evaluate_ddu_pca.py`](evaluate_ddu_pca.py): ViT feature dimension과 평가 registry
+
+기존 [`utils/sam.py`](utils/sam.py)의 SAM 구현은 수정하지 않고 base optimizer에 `torch.optim.AdamW`를 전달하여 재사용합니다.
+
+## 8. 구현 근거
+
+- Vision Transformer: [Dosovitskiy et al., *An Image is Worth 16x16 Words*](https://arxiv.org/abs/2010.11929)
+- AdamW: [Loshchilov and Hutter, *Decoupled Weight Decay Regularization*](https://arxiv.org/abs/1711.05101)
+- SAM: [Foret et al., *Sharpness-Aware Minimization for Efficiently Improving Generalization*](https://arxiv.org/abs/2010.01412)
+- ViT implementation: [Hugging Face pytorch-image-models (`timm`)](https://github.com/huggingface/pytorch-image-models)
+- DDU: [Mukhoti et al., *Deterministic Neural Networks with Appropriate Inductive Biases Capture Epistemic and Aleatoric Uncertainty*](https://arxiv.org/abs/2102.11582)
+
+## 9. 현재 범위와 주의사항
+
+- ViT는 CIFAR-10 scratch 학습만 검증 대상으로 합니다.
+- ViT에 spectral normalization이나 DDU 논문의 CNN architectural modification을 억지로 적용하지 않습니다.
+- AdamW와 SAM(AdamW)의 비교에서는 `rho` 외의 공통 optimizer 설정을 변경하지 마십시오.
+- SAM은 minibatch당 forward/backward를 두 번 수행하므로 AdamW보다 학습 시간이 길고 메모리보다는 계산량 증가가 큽니다.
+- 장기 sweep을 다시 시작할 때는 기존 `runs/`, `status.tsv`, `source_snapshot/`을 덮어쓰지 않습니다. 보존하거나 실험 디렉터리를 새 이름으로 복제한 뒤 실행하십시오.
+
+## License
+
+원본 DDU 저장소와 동일하게 MIT License를 따릅니다. 자세한 내용은 [`LICENSE`](LICENSE)를 확인하십시오.

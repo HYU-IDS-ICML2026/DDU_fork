@@ -83,6 +83,20 @@ def training_args():
     parser.add_argument(
         "--opt", type=str, default=optimiser, dest="optimiser", help="Choice of optimisation algorithm",
     )
+    parser.add_argument("--beta1", type=float, default=0.9, help="Adam/AdamW beta1")
+    parser.add_argument("--beta2", type=float, default=0.999, help="Adam/AdamW beta2")
+    parser.add_argument("--adam-eps", type=float, default=1e-8, dest="adam_eps", help="Adam/AdamW epsilon")
+    parser.add_argument(
+        "--label-smoothing", type=float, default=0.0, dest="label_smoothing", help="Cross-entropy label smoothing",
+    )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        choices=["multistep", "cosine"],
+        default="multistep",
+        help="Learning-rate scheduler",
+    )
+    parser.add_argument("--autoaugment", action="store_true", help="Use CIFAR-10 AutoAugment during training")
 
     parser.add_argument(
         "--loss", type=str, default=loss, dest="loss_function", help="Loss function to be used for training",

@@ -3,8 +3,11 @@ Script for training a single model for OOD detection.
 """
 
 import json
+import os
+import random
 import torch
 import argparse
+import numpy as np
 from torch import optim
 import torch.backends.cudnn as cudnn
 
@@ -19,6 +22,7 @@ from net.lenet import lenet
 from net.resnet import resnet18, resnet50
 from net.wide_resnet import wrn
 from net.vgg import vgg16
+from net.vit import vit_tiny_patch4_32
 
 # Import train and validation utilities
 from utils.args import training_args
@@ -49,6 +53,7 @@ models = {
     "resnet50": resnet50,
     "wide_resnet": wrn,
     "vgg16": vgg16,
+    "vit_tiny_patch4_32": vit_tiny_patch4_32,
 }
 
 
@@ -58,7 +63,13 @@ if __name__ == "__main__":
 
     print("Parsed args", args)
     print("Seed: ", args.seed)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    if args.model == "vit_tiny_patch4_32":
+        cudnn.benchmark = False
+        cudnn.deterministic = True
 
     cuda = torch.cuda.is_available() and args.gpu
     device = torch.device("cuda" if cuda else "cpu")
@@ -75,10 +86,11 @@ if __name__ == "__main__":
         mnist="mnist" in args.dataset,
     )
 
-    if args.gpu:
+    if cuda:
         net.cuda()
         net = torch.nn.DataParallel(net, device_ids=range(torch.cuda.device_count()))
-        cudnn.benchmark = True
+        if args.model != "vit_tiny_patch4_32":
+            cudnn.benchmark = True
 
     opt_params = net.parameters()
     if args.optimiser == "sgd":
@@ -91,7 +103,14 @@ if __name__ == "__main__":
         )
     elif args.optimiser == "adam":
         optimizer = optim.Adam(opt_params, lr=args.learning_rate, weight_decay=args.weight_decay)
-    
+    elif args.optimiser == "adamw":
+        optimizer = optim.AdamW(
+            opt_params,
+            lr=args.learning_rate,
+            betas=(args.beta1, args.beta2),
+            eps=args.adam_eps,
+            weight_decay=args.weight_decay,
+        )
 
     # SAM
     elif args.optimiser == "sam":
@@ -105,10 +124,25 @@ if __name__ == "__main__":
             rho=args.rho, # args.rho 추가
             nesterov=args.nesterov
         )
+    elif args.optimiser == "sam_adamw":
+        optimizer = SAM(
+            opt_params,
+            torch.optim.AdamW,
+            lr=args.learning_rate,
+            betas=(args.beta1, args.beta2),
+            eps=args.adam_eps,
+            weight_decay=args.weight_decay,
+            rho=args.rho,
+        )
+    else:
+        raise ValueError(f"Unknown optimizer: {args.optimiser}")
 
-    scheduler = optim.lr_scheduler.MultiStepLR(
-        optimizer, milestones=[args.first_milestone, args.second_milestone], gamma=0.1
-    )
+    if args.scheduler == "cosine":
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epoch)
+    else:
+        scheduler = optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=[args.first_milestone, args.second_milestone], gamma=0.1
+        )
 
     train_loader, _ = dataset_loader[args.dataset].get_train_valid_loader(
         root=args.dataset_root,
@@ -117,12 +151,17 @@ if __name__ == "__main__":
         val_size=0.1,
         val_seed=args.seed,
         pin_memory=args.gpu,
+        autoaugment=args.autoaugment,
     )
 
     # Creating summary writer in tensorboard
-    writer = SummaryWriter(args.save_loc + "stats_logging/")
+    os.makedirs(args.save_loc, exist_ok=True)
+    with open(os.path.join(args.save_loc, "training_args.json"), "w") as f:
+        json.dump(vars(args), f, indent=2, sort_keys=True)
+    writer = SummaryWriter(os.path.join(args.save_loc, "stats_logging"))
 
     training_set_loss = {}
+    training_set_accuracy = {}
 
     save_name = model_save_name(
         args.model, 
@@ -137,24 +176,30 @@ if __name__ == "__main__":
 
     for epoch in range(0, args.epoch):
         print("Starting epoch", epoch)
-        train_loss = train_single_epoch(
+        train_loss, train_accuracy = train_single_epoch(
             epoch, net, train_loader, optimizer, device, loss_function=args.loss_function, loss_mean=args.loss_mean,
-            optimiser_name=args.optimiser # SAM
+            optimiser_name=args.optimiser, label_smoothing=args.label_smoothing, return_accuracy=True,
+            log_interval=args.log_interval
         )
 
         training_set_loss[epoch] = train_loss
+        training_set_accuracy[epoch] = train_accuracy
         writer.add_scalar(save_name + "_train_loss", train_loss, (epoch + 1))
+        writer.add_scalar(save_name + "_train_accuracy", train_accuracy, (epoch + 1))
 
         scheduler.step()
 
         if (epoch + 1) % args.save_interval == 0:
-            saved_name = args.save_loc + save_name + "_" + str(epoch + 1) + ".model"
+            saved_name = os.path.join(args.save_loc, save_name + "_" + str(epoch + 1) + ".model")
             torch.save(net.state_dict(), saved_name)
 
-    saved_name = args.save_loc + save_name + "_" + str(epoch + 1) + ".model"
+    saved_name = os.path.join(args.save_loc, save_name + "_" + str(epoch + 1) + ".model")
     torch.save(net.state_dict(), saved_name)
     print("Model saved to ", saved_name)
 
     writer.close()
-    with open(saved_name[: saved_name.rfind("_")] + "_train_loss.json", "a") as f:
+    run_prefix = os.path.join(args.save_loc, save_name)
+    with open(run_prefix + "_train_loss.json", "w") as f:
         json.dump(training_set_loss, f)
+    with open(run_prefix + "_train_accuracy.json", "w") as f:
+        json.dump(training_set_accuracy, f)

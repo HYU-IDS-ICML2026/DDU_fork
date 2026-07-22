@@ -13,7 +13,9 @@ from torchvision import datasets
 from torchvision import transforms
 
 
-def get_train_valid_loader(batch_size, augment, val_seed, val_size=0.1, num_workers=4, pin_memory=False, **kwargs):
+def get_train_valid_loader(
+    batch_size, augment, val_seed, val_size=0.1, num_workers=4, pin_memory=False, autoaugment=False, **kwargs
+):
     """
     Utility function for loading and returning train and valid
     multi-process iterators over the CIFAR-10 dataset. 
@@ -43,9 +45,11 @@ def get_train_valid_loader(batch_size, augment, val_seed, val_size=0.1, num_work
     valid_transform = transforms.Compose([transforms.ToTensor(), normalize,])
 
     if augment:
-        train_transform = transforms.Compose(
-            [transforms.RandomCrop(32, padding=4), transforms.RandomHorizontalFlip(), transforms.ToTensor(), normalize,]
-        )
+        train_transforms = [transforms.RandomCrop(32, padding=4), transforms.RandomHorizontalFlip()]
+        if autoaugment:
+            train_transforms.append(transforms.AutoAugment(policy=transforms.AutoAugmentPolicy.CIFAR10))
+        train_transforms.extend([transforms.ToTensor(), normalize])
+        train_transform = transforms.Compose(train_transforms)
     else:
         train_transform = transforms.Compose([transforms.ToTensor(), normalize,])
 
