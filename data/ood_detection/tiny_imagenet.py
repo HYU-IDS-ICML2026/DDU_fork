@@ -98,7 +98,9 @@ class TinyImageNet(Dataset):
         return img, label
 
 
-def get_test_loader(batch_size, num_workers=4, pin_memory=True, root='./data', **kwargs):
+def get_test_loader(
+    batch_size, num_workers=4, pin_memory=True, root='./data', download=True, **kwargs
+):
     """
     Returns a DataLoader for the Tiny ImageNet validation set.
     Images are resized to 32x32 and normalized using CIFAR-10 statistics
@@ -118,7 +120,7 @@ def get_test_loader(batch_size, num_workers=4, pin_memory=True, root='./data', *
     ])
 
     # OOD Test usually uses the Validation set of TinyImageNet (10,000 images)
-    dataset = TinyImageNet(root=root, split='val', download=True, transform=transform)
+    dataset = TinyImageNet(root=root, split='val', download=download, transform=transform)
 
     data_loader = DataLoader(
         dataset, 

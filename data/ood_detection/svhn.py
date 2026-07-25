@@ -63,7 +63,9 @@ def get_train_valid_loader(batch_size, augment, val_seed, val_size=0.1, num_work
     return (train_loader, valid_loader)
 
 
-def get_test_loader(batch_size, num_workers=4, pin_memory=False, **kwargs):
+def get_test_loader(
+    batch_size, num_workers=4, pin_memory=False, root="./data", download=True, **kwargs
+):
     """
     Utility function for loading and returning a multi-process
     test iterator over the SVHN dataset.
@@ -83,8 +85,8 @@ def get_test_loader(batch_size, num_workers=4, pin_memory=False, **kwargs):
     # define transform
     transform = transforms.Compose([transforms.ToTensor(), normalize,])
 
-    data_dir = "./data"
-    dataset = datasets.SVHN(root=data_dir, split="test", download=True, transform=transform,)
+    data_dir = root
+    dataset = datasets.SVHN(root=data_dir, split="test", download=download, transform=transform,)
 
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory,

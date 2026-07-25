@@ -13,7 +13,17 @@ from torchvision import datasets
 from torchvision import transforms
 
 
-def get_train_valid_loader(batch_size, augment, val_seed, val_size=0.1, num_workers=4, pin_memory=False, **kwargs):
+def get_train_valid_loader(
+    batch_size,
+    augment,
+    val_seed,
+    val_size=0.1,
+    num_workers=4,
+    pin_memory=False,
+    root="./data",
+    download=True,
+    **kwargs
+):
     """
     Utility function for loading and returning train and valid
     multi-process iterators over the CIFAR-10 dataset. 
@@ -50,8 +60,8 @@ def get_train_valid_loader(batch_size, augment, val_seed, val_size=0.1, num_work
         train_transform = transforms.Compose([transforms.ToTensor(), normalize,])
 
     # load the dataset
-    data_dir = "./data"
-    train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=train_transform,)
+    data_dir = root
+    train_dataset = datasets.CIFAR10(root=data_dir, train=True, download=download, transform=train_transform,)
 
     valid_dataset = datasets.CIFAR10(root=data_dir, train=True, download=False, transform=valid_transform,)
 
@@ -77,7 +87,9 @@ def get_train_valid_loader(batch_size, augment, val_seed, val_size=0.1, num_work
     return (train_loader, valid_loader)
 
 
-def get_test_loader(batch_size, num_workers=4, pin_memory=False, **kwargs):
+def get_test_loader(
+    batch_size, num_workers=4, pin_memory=False, root="./data", download=True, **kwargs
+):
     """
     Utility function for loading and returning a multi-process
     test iterator over the CIFAR-10 dataset.
@@ -97,8 +109,8 @@ def get_test_loader(batch_size, num_workers=4, pin_memory=False, **kwargs):
     # define transform
     transform = transforms.Compose([transforms.ToTensor(), normalize,])
 
-    data_dir = "./data"
-    dataset = datasets.CIFAR10(root=data_dir, train=False, download=True, transform=transform,)
+    data_dir = root
+    dataset = datasets.CIFAR10(root=data_dir, train=False, download=download, transform=transform,)
 
     data_loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory,
